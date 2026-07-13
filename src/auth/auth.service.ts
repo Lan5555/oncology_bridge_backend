@@ -42,7 +42,7 @@ export class AuthService {
       const payload = {
         id: user.id,
         email: user.email,
-        role: user.role?.name, // Use optional chaining in case role is undefined
+        role: user.role?.name,
       };
 
       const accessToken = await this.jwtService.signAsync(payload);
