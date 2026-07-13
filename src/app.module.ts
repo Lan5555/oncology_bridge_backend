@@ -23,6 +23,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { GuardsModule } from './guards/guards.module';
 import { AuthModule } from './auth/auth.module';
 import { JwtModule } from '@nestjs/jwt';
+import { EncryptionModule } from './encryption/encryption.module';
 
 @Module({
   imports: [
@@ -65,6 +66,7 @@ import { JwtModule } from '@nestjs/jwt';
     WebhookLogModule,
     GuardsModule,
     AuthModule,
+    EncryptionModule,
   ],
   controllers: [AppController],
   providers: [AppService],

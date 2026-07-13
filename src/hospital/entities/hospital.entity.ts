@@ -9,6 +9,19 @@ import {
 import { User } from '../../users/entities/user.entity';
 import { Inventory } from '../../inventory/entities/inventory.entity';
 
+export enum FacilityStatus {
+  PENDING = 'PENDING',
+  ACTIVE = 'ACTIVE',
+  SUSPENDED = 'SUSPENDED',
+  REJECTED = 'REJECTED',
+}
+export enum FacilityType {
+  HOSPITAL = 'HOSPITAL',
+  CANCER_CENTER = 'CANCER_CENTER',
+  CLINIC = 'CLINIC',
+  PHARMACY = 'PHARMACY',
+}
+
 @Entity('hospitals')
 export class Hospital {
   @PrimaryGeneratedColumn('uuid')
@@ -16,6 +29,12 @@ export class Hospital {
 
   @Column()
   name!: string;
+
+  @Column({
+    type: 'enum',
+    enum: FacilityType,
+  })
+  facility_type!: FacilityType;
 
   @Column({ unique: true })
   hospital_code!: string;
@@ -34,23 +53,27 @@ export class Hospital {
     scale: 7,
     nullable: true,
   })
-  latitude!: number;
+  latitude?: number;
 
   @Column('decimal', {
     precision: 10,
     scale: 7,
     nullable: true,
   })
-  longitude!: number;
+  longitude?: number;
 
-  @Column()
+  @Column({ unique: true })
   phone!: string;
 
-  @Column()
+  @Column({ unique: true })
   email!: string;
 
-  @Column({ default: false })
-  verified!: boolean;
+  @Column({
+    type: 'enum',
+    enum: FacilityStatus,
+    default: FacilityStatus.PENDING,
+  })
+  status!: FacilityStatus;
 
   @CreateDateColumn()
   created_at!: Date;
@@ -62,5 +85,5 @@ export class Hospital {
   users!: User[];
 
   @OneToMany(() => Inventory, (inventory) => inventory.hospital)
-  inventory!: Inventory[];
+  inventories!: Inventory[];
 }
