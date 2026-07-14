@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import * as crypto from 'crypto';
+import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class EncryptionService {
@@ -33,5 +34,14 @@ export class EncryptionService {
     decrypted += decipher.final('utf8');
 
     return decrypted;
+  }
+
+  hashPassword(password: string): string {
+    const hash = bcrypt.hashSync(password, 10);
+    return hash;
+  }
+  comparePassword(password: string, hash: string): boolean {
+    const checkPassword = bcrypt.compareSync(password, hash);
+    return checkPassword;
   }
 }

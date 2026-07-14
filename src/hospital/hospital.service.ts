@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+/* eslint-disable @typescript-eslint/no-unused-vars */
+import { Injectable, UseGuards } from '@nestjs/common';
 import { CreateHospitalDto } from './dto/create-hospital.dto';
 import { UpdateHospitalDto } from './dto/update-hospital.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -6,6 +7,10 @@ import { Hospital } from './entities/hospital.entity';
 import { Repository } from 'typeorm';
 import { ResponseHelper } from '../helpers/response-helper';
 import { EncryptionService } from '../encryption/encryption.service';
+import { SuperAdminGuard } from '../guards/admin_guard/super_admin.guard';
+import { UsersService } from '../users/users.service';
+import { CreateUserDto } from '../users/dto/create-user.dto';
+import { User } from '../users/entities/user.entity';
 
 @Injectable()
 export class HospitalService {
@@ -13,8 +18,13 @@ export class HospitalService {
     @InjectRepository(Hospital)
     private readonly hospitalRepository: Repository<Hospital>,
     private readonly encryptionService: EncryptionService,
+    private readonly userService: UsersService,
   ) {}
-  async registerFacility(createHospitalDto: CreateHospitalDto) {
+  async registerFacility(
+    createHospitalDto: CreateHospitalDto,
+    createUserDto: CreateUserDto,
+    ip: string,
+  ) {
     try {
       const payload: CreateHospitalDto & { hospital_code: string } = {
         ...createHospitalDto,
@@ -24,10 +34,20 @@ export class HospitalService {
       };
       const hospital = this.hospitalRepository.create(payload);
       await this.hospitalRepository.save(hospital);
-      ResponseHelper.Success<Hospital>(
-        'Successfully created awaiting review',
+      const user = await this.userService.createByFacility(
+        createUserDto,
         hospital,
+        ip,
       );
+      if (user.success) {
+        const { password_hash, ...userData } = user.data as User;
+        ResponseHelper.Success<
+          Hospital & { admin: Omit<User, 'password_hash'> }
+        >('Successfully created awaiting review', {
+          ...hospital,
+          admin: { ...userData },
+        });
+      }
     } catch (e: any) {
       ResponseHelper.Error(e, null);
     }
@@ -140,5 +160,19 @@ export class HospitalService {
       .toUpperCase();
 
     return `${prefix}-${Math.floor(1000 + Math.random() * 9000)}`;
+  }
+
+  @UseGuards(SuperAdminGuard)
+  async deleteAllFAcilities() {
+    try {
+      const hospitals = await this.hospitalRepository.find();
+      if (!hospitals) {
+        return ResponseHelper.Error('No Facilities found', null);
+      }
+      await this.hospitalRepository.remove(hospitals);
+      return ResponseHelper.Success('Deleted Successfully', null);
+    } catch (e) {
+      return ResponseHelper.Error(e, null);
+    }
   }
 }

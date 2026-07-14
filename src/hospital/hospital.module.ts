@@ -4,9 +4,14 @@ import { HospitalController } from './hospital.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Hospital } from './entities/hospital.entity';
 import { EncryptionModule } from '../encryption/encryption.module';
+import { UsersModule } from '../users/users.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Hospital]), EncryptionModule],
+  imports: [
+    TypeOrmModule.forFeature([Hospital]),
+    EncryptionModule,
+    UsersModule,
+  ],
   controllers: [HospitalController],
   providers: [HospitalService],
 })

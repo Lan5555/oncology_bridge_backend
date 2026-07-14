@@ -1,34 +1,66 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  Ip,
+} from '@nestjs/common';
 import { HospitalService } from './hospital.service';
 import { CreateHospitalDto } from './dto/create-hospital.dto';
 import { UpdateHospitalDto } from './dto/update-hospital.dto';
+import { CreateUserDto } from '../users/dto/create-user.dto';
+import { ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class RegisterFacilityDto {
+  @ValidateNested()
+  @Type(() => CreateHospitalDto)
+  facility!: CreateHospitalDto;
+
+  @ValidateNested()
+  @Type(() => CreateUserDto)
+  admin!: CreateUserDto;
+}
 
 @Controller('hospital')
 export class HospitalController {
   constructor(private readonly hospitalService: HospitalService) {}
 
-  @Post()
-  create(@Body() createHospitalDto: CreateHospitalDto) {
-    return this.hospitalService.create(createHospitalDto);
+  @Post('/api/register-facility')
+  registerFacility(
+    @Body() registerFacilityDto: RegisterFacilityDto,
+    @Ip() ip: string,
+  ) {
+    return this.hospitalService.registerFacility(
+      registerFacilityDto.facility,
+      registerFacilityDto.admin,
+      ip,
+    );
   }
 
-  @Get()
-  findAll() {
+  @Get('/api/find-all-facilities')
+  findAllFacilities() {
     return this.hospitalService.findAll();
   }
 
-  @Get(':id')
+  @Get('/api/find-one-facility/:id')
   findOne(@Param('id') id: string) {
-    return this.hospitalService.findOne(+id);
+    return this.hospitalService.findOneFacility(id);
   }
 
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateHospitalDto: UpdateHospitalDto) {
-    return this.hospitalService.update(+id, updateHospitalDto);
+  @Patch('/api/update-one-facility/:id')
+  update(
+    @Param('id') id: string,
+    @Body() updateHospitalDto: UpdateHospitalDto,
+  ) {
+    return this.hospitalService.updateOneFacility(id, updateHospitalDto);
   }
 
-  @Delete(':id')
+  @Delete('/api/delete-one-facility/:id')
   remove(@Param('id') id: string) {
-    return this.hospitalService.remove(+id);
+    return this.hospitalService.remove(id);
   }
 }
