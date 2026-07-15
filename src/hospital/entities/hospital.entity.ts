@@ -85,5 +85,5 @@ export class Hospital {
   users!: User[];
 
   @OneToMany(() => Inventory, (inventory) => inventory.hospital)
-  inventories!: Inventory[];
+  inventory!: Inventory[];
 }

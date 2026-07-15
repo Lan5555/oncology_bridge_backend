@@ -41,15 +41,17 @@ export class HospitalService {
       );
       if (user.success) {
         const { password_hash, ...userData } = user.data as User;
-        ResponseHelper.Success<
+        return ResponseHelper.Success<
           Hospital & { admin: Omit<User, 'password_hash'> }
-        >('Successfully created awaiting review', {
+        >('Successfully created, awaiting review', {
           ...hospital,
           admin: { ...userData },
         });
+      } else {
+        return ResponseHelper.Error(user.message, null);
       }
     } catch (e: any) {
-      ResponseHelper.Error(e, null);
+      return ResponseHelper.Error(e, null);
     }
   }
 
@@ -69,7 +71,7 @@ export class HospitalService {
         ...hospitalResponse,
       );
     } catch (e: any) {
-      ResponseHelper.Error(e, null);
+      return ResponseHelper.Error(e, null);
     }
   }
 
@@ -85,7 +87,7 @@ export class HospitalService {
         phone: this.encryptionService.decrypt(hospital.phone),
       });
     } catch (e) {
-      ResponseHelper.Error(e, null);
+      return ResponseHelper.Error(e, null);
     }
   }
 

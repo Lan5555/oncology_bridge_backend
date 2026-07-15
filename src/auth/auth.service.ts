@@ -24,14 +24,14 @@ export class AuthService {
         email: userDetails.email,
       });
       if (!user) {
-        return ResponseHelper.Error('User not found', null);
+        return ResponseHelper.Error('User not found');
       }
       const decryptPassword = await bcrypt.compare(
         userDetails.password,
         user.password_hash,
       );
       if (!decryptPassword) {
-        return ResponseHelper.Error('Invalid password', null);
+        return ResponseHelper.Error('Invalid password');
       }
 
       // 1. Update mutable state FIRST before stripping properties
@@ -57,7 +57,7 @@ export class AuthService {
         token: accessToken,
       });
     } catch (error: any) {
-      return ResponseHelper.Error(error, null);
+      return ResponseHelper.Error(error);
     }
   }
 

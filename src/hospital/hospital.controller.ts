@@ -30,7 +30,7 @@ export class HospitalController {
   constructor(private readonly hospitalService: HospitalService) {}
 
   @Post('/api/register-facility')
-  registerFacility(
+  async registerFacility(
     @Body() registerFacilityDto: RegisterFacilityDto,
     @Ip() ip: string,
   ) {
