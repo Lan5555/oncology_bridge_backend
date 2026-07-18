@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import { Injectable } from '@nestjs/common';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -56,19 +57,114 @@ export class UsersService {
     }
   }
 
-  findAll() {
-    return `This action returns all users`;
+  async createRegular(createUserDto: CreateUserDto, ip: string) {
+    try {
+      const user = this.userRepository.create(createUserDto);
+      const payload = {
+        ...user,
+        password_hash: this.encryptionService.hashPassword(
+          createUserDto.password,
+        ),
+        email: this.encryptionService.encrypt(createUserDto.email),
+        phone: this.encryptionService.encrypt(createUserDto.phone),
+        allowed_ip: ip,
+      };
+      await this.userRepository.save(payload);
+      const { password_hash, ...userData } = user;
+      return ResponseHelper.Success<Omit<User, 'password_hash'>>(
+        'Processed Successfully',
+        {
+          ...userData,
+          email: this.encryptionService.decrypt(userData.email),
+          phone: this.encryptionService.decrypt(userData.phone),
+        },
+      );
+    } catch (e) {
+      return ResponseHelper.Error(e);
+    }
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} user`;
+  async findAll({ take = 10, skip = 0 }: { take: number; skip: number }) {
+    try {
+      const users = await this.userRepository.find({
+        take,
+        skip,
+      });
+      if (!users) return ResponseHelper.Error<null>('No users found', null);
+      const usersData = users.map((user) => {
+        const { password_hash, ...u } = user;
+        return {
+          ...u,
+          phone: this.encryptionService.decrypt(u.phone),
+          email: this.encryptionService.decrypt(u.email),
+        };
+      });
+      return ResponseHelper.Success<Omit<User, 'password_hash'>[]>(
+        'Users Retrieved Successfully',
+        usersData,
+      );
+    } catch (e) {
+      return ResponseHelper.Error(e);
+    }
   }
 
-  update(id: number, updateUserDto: UpdateUserDto) {
-    return `This action updates a #${id} user`;
+  async findOneUser(id: string) {
+    try {
+      const user = await this.userRepository.findOneBy({ id });
+      if (!user) return ResponseHelper.Error('User not found', null);
+      const { password_hash, ...userData } = user;
+      return ResponseHelper.Success<Omit<User, 'password_hash'>>(
+        'Processed Successfuly',
+        {
+          ...userData,
+          phone: this.encryptionService.decrypt(user.phone),
+          email: this.encryptionService.decrypt(user.email),
+        },
+      );
+    } catch (e) {
+      return ResponseHelper.Error(e);
+    }
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} user`;
+  async update(id: string, updateUserDto: UpdateUserDto) {
+    const user = await this.userRepository.findOneBy({ id });
+
+    if (!user) {
+      return ResponseHelper.Error('User not found', null);
+    }
+
+    // Encrypt only the fields that require it
+    if (updateUserDto.email) {
+      updateUserDto.email = this.encryptionService.encrypt(updateUserDto.email);
+    }
+
+    if (updateUserDto.phone) {
+      updateUserDto.phone = this.encryptionService.encrypt(updateUserDto.phone);
+    }
+
+    // Update the entity
+    Object.assign(user, updateUserDto);
+
+    const updatedUser = await this.userRepository.save(user);
+
+    // Decrypt before returning
+    updatedUser.email = this.encryptionService.decrypt(updatedUser.email);
+    updatedUser.phone = this.encryptionService.decrypt(updatedUser.phone);
+    const { password_hash, ...u } = updatedUser;
+    return ResponseHelper.Success<Omit<User, 'password_hash'>>(
+      'User updated successfully',
+      u,
+    );
+  }
+
+  async removeUser(id: string) {
+    try {
+      const user = await this.userRepository.findOneBy({ id });
+      if (!user) return ResponseHelper.Error('User not found', null);
+      await this.userRepository.remove(user);
+      return ResponseHelper.Success<null>('User deleted Successfully', null);
+    } catch (e) {
+      return ResponseHelper.Error(e);
+    }
   }
 }
