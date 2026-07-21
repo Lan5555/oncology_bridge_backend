@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import { Injectable, UseGuards } from '@nestjs/common';
+import { ConflictException, Injectable, UseGuards } from '@nestjs/common';
 import { CreateHospitalDto } from './dto/create-hospital.dto';
 import { UpdateHospitalDto } from './dto/update-hospital.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -26,11 +26,31 @@ export class HospitalService {
     ip: string,
   ) {
     try {
-      const payload: CreateHospitalDto & { hospital_code: string } = {
+      const normalizedEmail = createHospitalDto.email.trim().toLowerCase();
+      const emailHash = this.encryptionService.hash(normalizedEmail);
+
+      const existingHospital = await this.hospitalRepository.findOne({
+        where: {
+          email_hash: emailHash,
+        },
+      });
+
+      if (existingHospital) {
+        throw new ConflictException(
+          'A hospital with this data already exists.',
+        );
+      }
+      const payload: CreateHospitalDto & {
+        hospital_code: string;
+        email_hash: string;
+        phone_hash: string;
+      } = {
         ...createHospitalDto,
         hospital_code: this.generateHospitalCode(createHospitalDto.name),
         phone: this.encryptionService.encrypt(createHospitalDto.phone),
-        email: this.encryptionService.encrypt(createHospitalDto.email),
+        email: emailHash,
+        email_hash: this.encryptionService.hash(createHospitalDto.email),
+        phone_hash: this.encryptionService.hash(createHospitalDto.phone),
       };
       const hospital = this.hospitalRepository.create(payload);
       await this.hospitalRepository.save(hospital);

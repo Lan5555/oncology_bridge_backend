@@ -7,6 +7,7 @@ import { Repository } from 'typeorm';
 import { CoreResponse, ResponseHelper } from '../helpers/response-helper';
 import * as bcrypt from 'bcrypt';
 import { UserSession } from '../user_sessions/entities/user_session.entity';
+import { EncryptionService } from '../encryption/encryption.service';
 
 @Injectable()
 export class AuthService {
@@ -16,12 +17,16 @@ export class AuthService {
     private readonly userRepository: Repository<User>,
     @InjectRepository(UserSession)
     private readonly userSession: Repository<UserSession>,
+    private encryptionService: EncryptionService,
   ) {}
 
   async loginUser(userDetails: AuthDto): CoreResponse {
+    const userMail = this.encryptionService.hash(userDetails.email);
     try {
-      const user = await this.userRepository.findOneBy({
-        email: userDetails.email,
+      const user = await this.userRepository.findOne({
+        where: {
+          email_hash: userMail,
+        },
       });
       if (!user) {
         return ResponseHelper.Error('User not found');

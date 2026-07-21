@@ -5,6 +5,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from '../users/entities/user.entity';
 import { UserSession } from '../user_sessions/entities/user_session.entity';
+import { EncryptionModule } from '../encryption/encryption.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { UserSession } from '../user_sessions/entities/user_session.entity';
       signOptions: { expiresIn: '1h' },
     }),
     TypeOrmModule.forFeature([User, UserSession]),
+    EncryptionModule,
   ],
   controllers: [AuthController],
   providers: [AuthService],

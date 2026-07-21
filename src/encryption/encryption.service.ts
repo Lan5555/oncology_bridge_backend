@@ -44,4 +44,14 @@ export class EncryptionService {
     const checkPassword = bcrypt.compareSync(password, hash);
     return checkPassword;
   }
+  hash(value: string): string {
+    return crypto
+      .createHash('sha256')
+      .update(value.trim().toLowerCase())
+      .digest('hex');
+  }
+  compareValue(content: string, hash: string): boolean {
+    const val = bcrypt.compareSync(content, hash);
+    return val;
+  }
 }

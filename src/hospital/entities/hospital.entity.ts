@@ -69,6 +69,20 @@ export class Hospital {
   email!: string;
 
   @Column({
+    type: 'varchar',
+    length: 64,
+    unique: true,
+  })
+  email_hash!: string;
+
+  @Column({
+    type: 'varchar',
+    length: 64,
+    unique: true,
+  })
+  phone_hash!: string;
+
+  @Column({
     type: 'enum',
     enum: FacilityStatus,
     default: FacilityStatus.PENDING,

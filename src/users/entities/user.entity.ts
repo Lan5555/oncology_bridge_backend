@@ -35,6 +35,20 @@ export class User {
   @Column()
   phone!: string;
 
+  @Column({
+    type: 'varchar',
+    length: 64,
+    unique: true,
+  })
+  email_hash!: string;
+
+  @Column({
+    type: 'varchar',
+    length: 64,
+    unique: true,
+  })
+  phone_hash!: string;
+
   @Column()
   password_hash!: string;
 

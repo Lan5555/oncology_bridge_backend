@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ResponseHelper } from '../helpers/response-helper';
@@ -32,6 +32,18 @@ export class UsersService {
       if (!adminRole) {
         return ResponseHelper.Error('Admin role not found', null);
       }
+      const normalizedEmail = createUserDto.email.trim().toLowerCase();
+      const emailHash = this.encryptionService.hash(normalizedEmail);
+
+      const existingUser = await this.userRepository.findOne({
+        where: {
+          email_hash: emailHash,
+        },
+      });
+
+      if (existingUser) {
+        throw new ConflictException('A User with this data already exists.');
+      }
       const payload = {
         hospital: hospitalData,
         role: adminRole,
@@ -39,6 +51,8 @@ export class UsersService {
         last_name: createUserDto.last_name,
         phone: this.encryptionService.encrypt(createUserDto.phone),
         email: this.encryptionService.encrypt(createUserDto.email),
+        phone_hash: this.encryptionService.hash(createUserDto.phone),
+        email_hash: this.encryptionService.hash(createUserDto.email),
         password_hash: this.encryptionService.hashPassword(
           createUserDto.password,
         ),
@@ -59,6 +73,18 @@ export class UsersService {
 
   async createRegular(createUserDto: CreateUserDto, ip: string) {
     try {
+      const normalizedEmail = createUserDto.email.trim().toLowerCase();
+      const emailHash = this.encryptionService.hash(normalizedEmail);
+
+      const existingUser = await this.userRepository.findOne({
+        where: {
+          email_hash: emailHash,
+        },
+      });
+
+      if (existingUser) {
+        throw new ConflictException('A User with this data already exists.');
+      }
       const user = this.userRepository.create(createUserDto);
       const payload = {
         ...user,
@@ -68,6 +94,8 @@ export class UsersService {
         email: this.encryptionService.encrypt(createUserDto.email),
         phone: this.encryptionService.encrypt(createUserDto.phone),
         allowed_ip: ip,
+        phone_hash: this.encryptionService.hash(createUserDto.phone),
+        email_hash: this.encryptionService.hash(createUserDto.email),
       };
       await this.userRepository.save(payload);
       const { password_hash, ...userData } = user;
