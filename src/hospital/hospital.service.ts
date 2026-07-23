@@ -19,6 +19,8 @@ export class HospitalService {
     private readonly hospitalRepository: Repository<Hospital>,
     private readonly encryptionService: EncryptionService,
     private readonly userService: UsersService,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
   ) {}
   async registerFacility(
     createHospitalDto: CreateHospitalDto,
@@ -48,8 +50,8 @@ export class HospitalService {
         ...createHospitalDto,
         hospital_code: this.generateHospitalCode(createHospitalDto.name),
         phone: this.encryptionService.encrypt(createHospitalDto.phone),
-        email: emailHash,
-        email_hash: this.encryptionService.hash(createHospitalDto.email),
+        email: this.encryptionService.encrypt(createHospitalDto.email),
+        email_hash: emailHash,
         phone_hash: this.encryptionService.hash(createHospitalDto.phone),
       };
       const hospital = this.hospitalRepository.create(payload);
@@ -62,9 +64,9 @@ export class HospitalService {
       if (user.success) {
         const { password_hash, ...userData } = user.data as User;
         return ResponseHelper.Success<
-          Hospital & { admin: Omit<User, 'password_hash'> }
+          { facility: Hospital } & { admin: Omit<User, 'password_hash'> }
         >('Successfully created, awaiting review', {
-          ...hospital,
+          facility: { ...hospital },
           admin: { ...userData },
         });
       } else {
@@ -77,18 +79,50 @@ export class HospitalService {
 
   async findAll() {
     try {
-      const hospitals = await this.hospitalRepository.find();
+      const hospitals = await this.hospitalRepository.find({
+        relations: {
+          users: {
+            role: true,
+          },
+          inventory: true,
+        },
+      });
       if (!hospitals) {
         return ResponseHelper.Error('No Facilities found', null);
       }
-      const hospitalResponse = hospitals.map((hospital) => ({
-        ...hospital,
-        phone: this.encryptionService.decrypt(hospital.phone),
-        email: this.encryptionService.decrypt(hospital.email),
-      }));
-      return ResponseHelper.Success<Hospital>(
+
+      const hospitalResponse = hospitals.map((hospital) => {
+        const { email_hash, phone_hash, ...h } = hospital;
+        const users = hospital.users.map((user) => {
+          const { phone_hash, email_hash, password_hash, ...u } = user;
+
+          return {
+            ...u,
+            phone: this.encryptionService.decrypt(u.phone),
+            email: this.encryptionService.decrypt(u.email),
+          };
+        });
+        return {
+          ...h,
+          phone: this.encryptionService.decrypt(hospital.phone),
+          email: this.encryptionService.decrypt(hospital.email),
+          users,
+        };
+      });
+      type CleanUser = Omit<
+        User,
+        'phone_hash' | 'email_hash' | 'password_hash'
+      >;
+      type CleanHospital = Omit<
+        Hospital,
+        'email_hash' | 'phone_hash' | 'users'
+      > & {
+        users: CleanUser[];
+      };
+
+      return ResponseHelper.Success<CleanHospital[]>(
         'Retrieved Successfully',
-        ...hospitalResponse,
+        hospitalResponse,
       );
     } catch (e: any) {
       return ResponseHelper.Error(e, null);

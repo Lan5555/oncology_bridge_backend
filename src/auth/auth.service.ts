@@ -8,6 +8,7 @@ import { CoreResponse, ResponseHelper } from '../helpers/response-helper';
 import * as bcrypt from 'bcrypt';
 import { UserSession } from '../user_sessions/entities/user_session.entity';
 import { EncryptionService } from '../encryption/encryption.service';
+import { CleanResponse } from '../helpers/cleanerss';
 
 @Injectable()
 export class AuthService {
@@ -26,6 +27,10 @@ export class AuthService {
       const user = await this.userRepository.findOne({
         where: {
           email_hash: userMail,
+        },
+        relations: {
+          role: true,
+          hospital: true,
         },
       });
       if (!user) {
@@ -52,13 +57,17 @@ export class AuthService {
 
       const accessToken = await this.jwtService.signAsync(payload);
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { password_hash, ...userInfo } = user;
+      const userInfo = CleanResponse.cleanWithPassword(user);
 
       return ResponseHelper.Success<{
-        user: Omit<User, 'password_hash'>;
+        user: Omit<User, 'password_hash' | 'phone_hash' | 'email_hash'>;
         token: string;
       }>('Login successful', {
-        user: userInfo,
+        user: {
+          ...userInfo,
+          email: this.encryptionService.decrypt(userInfo.email),
+          phone: this.encryptionService.decrypt(userInfo.phone),
+        },
         token: accessToken,
       });
     } catch (error: any) {

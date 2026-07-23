@@ -10,6 +10,7 @@ import { Hospital } from '../hospital/entities/hospital.entity';
 import { EncryptionService } from '../encryption/encryption.service';
 import { Role } from '../role/entities/role.entity';
 import { Roles } from '../helpers/types';
+import { CleanResponse } from '../helpers/cleanerss';
 
 @Injectable()
 export class UsersService {
@@ -115,22 +116,32 @@ export class UsersService {
   async findAll({ take = 10, skip = 0 }: { take: number; skip: number }) {
     try {
       const users = await this.userRepository.find({
-        take,
-        skip,
+        relations: {
+          role: true,
+          hospital: true,
+        },
+        take: take,
+        skip: skip,
       });
       if (!users) return ResponseHelper.Error<null>('No users found', null);
       const usersData = users.map((user) => {
-        const { password_hash, ...u } = user;
+        const { password_hash, email_hash, phone_hash, ...u } = user;
+        const h = CleanResponse.cleanPlain<Hospital>(u.hospital);
+        const cleanHospital = {
+          ...h,
+          phone: this.encryptionService.decrypt(h.phone),
+          email: this.encryptionService.decrypt(h.email),
+        };
         return {
           ...u,
           phone: this.encryptionService.decrypt(u.phone),
           email: this.encryptionService.decrypt(u.email),
+          hospital: cleanHospital,
         };
       });
-      return ResponseHelper.Success<Omit<User, 'password_hash'>[]>(
-        'Users Retrieved Successfully',
-        usersData,
-      );
+      return ResponseHelper.Success<
+        Omit<User, 'password_hash' | 'phone_hash' | 'email_hash' | 'hospital'>[]
+      >('Users Retrieved Successfully', usersData);
     } catch (e) {
       return ResponseHelper.Error(e);
     }

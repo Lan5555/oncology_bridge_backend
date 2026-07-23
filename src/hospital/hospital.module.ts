@@ -5,10 +5,11 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Hospital } from './entities/hospital.entity';
 import { EncryptionModule } from '../encryption/encryption.module';
 import { UsersModule } from '../users/users.module';
+import { User } from '../users/entities/user.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Hospital]),
+    TypeOrmModule.forFeature([Hospital, User]),
     EncryptionModule,
     UsersModule,
   ],
