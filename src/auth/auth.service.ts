@@ -58,8 +58,12 @@ export class AuthService {
       const accessToken = await this.jwtService.signAsync(payload);
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const userInfo = CleanResponse.cleanWithPassword(user);
-      const checkSession = await this.userSession.findOneBy({
-        user: userInfo,
+      const checkSession = await this.userSession.findOne({
+        where: {
+          user: {
+            id: user.id,
+          },
+        },
       });
       if (!checkSession) {
         const oneHour = 60 * 60 * 1000; // 3600000 ms
@@ -73,7 +77,7 @@ export class AuthService {
         await this.userSession.save(session);
       } else {
         await this.userSession.update(
-          { user: userInfo },
+          { id: checkSession.id },
           { refresh_token: accessToken },
         );
       }
