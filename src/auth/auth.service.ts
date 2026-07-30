@@ -58,10 +58,25 @@ export class AuthService {
       const accessToken = await this.jwtService.signAsync(payload);
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const userInfo = CleanResponse.cleanWithPassword(user);
-      await this.userSession.update(
-        { id: userInfo.id },
-        { refresh_token: accessToken },
-      );
+      const checkSession = await this.userSession.findOneBy({
+        id: userInfo.id,
+      });
+      if (!checkSession) {
+        const oneHour = 60 * 60 * 1000; // 3600000 ms
+        const session = this.userSession.create({
+          user: userInfo,
+          device_id: userInfo.device_id,
+          ip_address: userInfo.allowed_ip,
+          expires_at: new Date(Date.now() + oneHour),
+          refresh_token: accessToken,
+        });
+        await this.userSession.save(session);
+      } else {
+        await this.userSession.update(
+          { id: userInfo.id },
+          { refresh_token: accessToken },
+        );
+      }
 
       return ResponseHelper.Success<{
         user: Omit<User, 'password_hash' | 'phone_hash' | 'email_hash'>;
