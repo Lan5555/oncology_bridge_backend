@@ -41,7 +41,7 @@ export class AuthService {
         user.password_hash,
       );
       if (!decryptPassword) {
-        return ResponseHelper.Error('Invalid password');
+        return ResponseHelper.Error('Invalid Password');
       }
 
       // 1. Update mutable state FIRST before stripping properties
@@ -58,6 +58,10 @@ export class AuthService {
       const accessToken = await this.jwtService.signAsync(payload);
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const userInfo = CleanResponse.cleanWithPassword(user);
+      await this.userSession.update(
+        { id: userInfo.id },
+        { refresh_token: accessToken },
+      );
 
       return ResponseHelper.Success<{
         user: Omit<User, 'password_hash' | 'phone_hash' | 'email_hash'>;

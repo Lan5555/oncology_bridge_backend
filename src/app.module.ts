@@ -36,16 +36,29 @@ import { EncryptionModule } from './encryption/encryption.module';
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        type: 'postgres',
-        host: configService.get<string>('DATABASE_HOST', 'localhost'),
-        port: configService.get<number>('DATABASE_PORT', 5432),
-        username: configService.get<string>('DATABASE_USERNAME'),
-        password: configService.get<string>('DATABASE_PASSWORD'),
-        synchronize: false,
-        autoLoadEntities: true,
-        database: configService.get<string>('DATABASE_NAME'),
-      }),
+      useFactory: (configService: ConfigService) => {
+        const isProduction = configService.get('NODE_ENV') === 'production';
+
+        return {
+          type: 'postgres',
+          ...(isProduction
+            ? {
+                url: configService.get<string>('DATABASE_URL'),
+                ssl: {
+                  rejectUnauthorized: false,
+                },
+              }
+            : {
+                host: configService.get<string>('DATABASE_HOST'),
+                port: configService.get<number>('DATABASE_PORT'),
+                username: configService.get<string>('DATABASE_USERNAME'),
+                password: configService.get<string>('DATABASE_PASSWORD'),
+                database: configService.get<string>('DATABASE_NAME'),
+              }),
+          autoLoadEntities: true,
+          synchronize: false,
+        };
+      },
     }),
     UsersModule,
     RoleModule,
