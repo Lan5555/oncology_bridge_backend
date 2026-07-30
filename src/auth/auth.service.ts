@@ -92,4 +92,8 @@ export class AuthService {
       return ResponseHelper.Error(error, null);
     }
   }
+
+  pingServer() {
+    return ResponseHelper.Success('Loaded Successdully', null);
+  }
 }

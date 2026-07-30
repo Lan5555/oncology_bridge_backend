@@ -13,4 +13,8 @@ export class AuthController {
   async logout(@Query('id') id: string) {
     return this.authService.logUserOut(id);
   }
+  @Get('/api/ping-server')
+  pingServer() {
+    return this.authService.pingServer();
+  }
 }
