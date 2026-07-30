@@ -73,7 +73,7 @@ export class AuthService {
         await this.userSession.save(session);
       } else {
         await this.userSession.update(
-          { id: userInfo.id },
+          { user: userInfo },
           { refresh_token: accessToken },
         );
       }
