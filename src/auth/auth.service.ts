@@ -59,7 +59,7 @@ export class AuthService {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const userInfo = CleanResponse.cleanWithPassword(user);
       const checkSession = await this.userSession.findOneBy({
-        id: userInfo.id,
+        user: userInfo,
       });
       if (!checkSession) {
         const oneHour = 60 * 60 * 1000; // 3600000 ms
