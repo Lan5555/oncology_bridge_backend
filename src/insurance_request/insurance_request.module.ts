@@ -3,9 +3,17 @@ import { InsuranceRequestService } from './insurance_request.service';
 import { InsuranceRequestController } from './insurance_request.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { InsuranceRequest } from './entities/insurance_request.entity';
+import { InsuranceProvider } from '../insurance_provider/entities/insurance_provider.entity';
+import { TransferRequest } from '../transfer_requests/entities/transfer_request.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([InsuranceRequest])],
+  imports: [
+    TypeOrmModule.forFeature([
+      InsuranceRequest,
+      InsuranceProvider,
+      TransferRequest,
+    ]),
+  ],
   controllers: [InsuranceRequestController],
   providers: [InsuranceRequestService],
 })

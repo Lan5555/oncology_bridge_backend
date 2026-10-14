@@ -1,5 +1,10 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import { ConflictException, Injectable, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  UseGuards,
+} from '@nestjs/common';
 import { CreateHospitalDto } from './dto/create-hospital.dto';
 import { UpdateHospitalDto } from './dto/update-hospital.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -11,6 +16,7 @@ import { SuperAdminGuard } from '../guards/admin_guard/super_admin.guard';
 import { UsersService } from '../users/users.service';
 import { CreateUserDto } from '../users/dto/create-user.dto';
 import { User } from '../users/entities/user.entity';
+import { JwtService } from '@nestjs/jwt';
 
 @Injectable()
 export class HospitalService {
@@ -21,11 +27,14 @@ export class HospitalService {
     private readonly userService: UsersService,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    private readonly jwtService: JwtService,
   ) {}
   async registerFacility(
     createHospitalDto: CreateHospitalDto,
     createUserDto: CreateUserDto,
     ip: string,
+    accountType?: string,
+    license?: { number: string; registry: string },
   ) {
     try {
       const normalizedEmail = createHospitalDto.email.trim().toLowerCase();
@@ -62,12 +71,30 @@ export class HospitalService {
         ip,
       );
       if (user.success) {
-        const { password_hash, ...userData } = user.data as User;
-        return ResponseHelper.Success<
-          { facility: Hospital } & { admin: Omit<User, 'password_hash'> }
-        >('Successfully created, awaiting review', {
+        const { password_hash, email_hash, phone_hash, ...userData } =
+          user.data as User;
+        const token = await this.jwtService.signAsync({
+          id: userData.id,
+          email: userData.email,
+          role: (userData as any).role?.name ?? 'ADMIN',
+        });
+        return ResponseHelper.Success<{
+          facility: Hospital;
+          admin: Omit<User, 'password_hash' | 'email_hash' | 'phone_hash'>;
+          token: string;
+          verification: any;
+        }>('Successfully created, awaiting review', {
           facility: { ...hospital },
           admin: { ...userData },
+          token,
+          verification: {
+            accountType,
+            licenseNumber: license?.number,
+            registry: license?.registry,
+            status: 'MANUAL_REVIEW',
+            registryResult: 'UNAVAILABLE',
+            integration: 'mocked until registry credentials are configured',
+          },
         });
       } else {
         return ResponseHelper.Error(user.message, null);
@@ -77,7 +104,14 @@ export class HospitalService {
     }
   }
 
-  async findAll() {
+  async findAll(
+    options: {
+      status?: string;
+      q?: string;
+      page?: number;
+      limit?: number;
+    } = {},
+  ) {
     try {
       const hospitals = await this.hospitalRepository.find({
         relations: {
@@ -91,7 +125,19 @@ export class HospitalService {
         return ResponseHelper.Error('No Facilities found', null);
       }
 
-      const hospitalResponse = hospitals.map((hospital) => {
+      const filtered = hospitals.filter(
+        (h) =>
+          (!options.status || h.status === options.status) &&
+          (!options.q ||
+            `${h.name} ${h.city} ${h.state} ${h.hospital_code}`
+              .toLowerCase()
+              .includes(options.q.toLowerCase())),
+      );
+      const page = Math.max(1, Number(options.page) || 1);
+      const limit = Math.min(100, Math.max(1, Number(options.limit) || 100));
+      const pageRows = filtered.slice((page - 1) * limit, page * limit);
+
+      const hospitalResponse = pageRows.map((hospital) => {
         const { email_hash, phone_hash, ...h } = hospital;
         const users = hospital.users.map((user) => {
           const { phone_hash, email_hash, password_hash, ...u } = user;
@@ -120,13 +166,93 @@ export class HospitalService {
         users: CleanUser[];
       };
 
-      return ResponseHelper.Success<CleanHospital[]>(
-        'Retrieved Successfully',
-        hospitalResponse,
-      );
+      const counts = {
+        total: hospitals.length,
+        active: hospitals.filter((h) => h.status === 'ACTIVE').length,
+        pending: hospitals.filter((h) => h.status === 'PENDING').length,
+        suspended: hospitals.filter((h) => h.status === 'SUSPENDED').length,
+      };
+      return ResponseHelper.Success<{
+        facilities: CleanHospital[];
+        counts: typeof counts;
+        page: number;
+        limit: number;
+        total: number;
+      }>('Retrieved Successfully', {
+        facilities: hospitalResponse,
+        counts,
+        page,
+        limit,
+        total: filtered.length,
+      });
     } catch (e: any) {
       return ResponseHelper.Error(e, null);
     }
+  }
+
+  async getNetwork() {
+    const facilities = await this.hospitalRepository.find();
+    const nodes = facilities.map((h) => ({
+      id: h.id,
+      name: h.name,
+      type: h.facility_type,
+      city: h.city,
+      lat: h.latitude == null ? null : Number(h.latitude),
+      lng: h.longitude == null ? null : Number(h.longitude),
+      online: h.status === 'ACTIVE',
+      alert: h.status !== 'ACTIVE',
+    }));
+    const links: { from: string; to: string; distanceKm: number }[] = [];
+    for (let i = 0; i < nodes.length; i++)
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i],
+          b = nodes[j];
+        if (a.lat == null || a.lng == null || b.lat == null || b.lng == null)
+          continue;
+        const rad = (n: number) => (n * Math.PI) / 180;
+        const dLat = rad(b.lat - a.lat),
+          dLng = rad(b.lng - a.lng);
+        const x =
+          Math.sin(dLat / 2) ** 2 +
+          Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+        const distanceKm =
+          6371 * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+        if (distanceKm <= 80)
+          links.push({
+            from: a.id,
+            to: b.id,
+            distanceKm: Math.round(distanceKm * 10) / 10,
+          });
+      }
+    const average = links.length
+      ? links.reduce((n, l) => n + l.distanceKm, 0) / links.length
+      : null;
+    return ResponseHelper.Success('Network retrieved', {
+      facilities: nodes,
+      links,
+      analytics: {
+        avgDistanceKm: average,
+        avgTransitHrs: null,
+        fuelSavedNaira: null,
+      },
+    });
+  }
+
+  verifyLicense(body: {
+    licenseNumber: string;
+    registry: string;
+    lastName?: string;
+  }) {
+    if (!/^[A-Za-z0-9/\-]{4,24}$/.test(body.licenseNumber ?? ''))
+      throw new BadRequestException('Invalid license number');
+    if (!['MDCN', 'PCN', 'PCN_PREMISES'].includes(body.registry))
+      throw new BadRequestException('Unsupported license registry');
+    if (body.lastName && !/^[\p{L}\s.'-]{1,60}$/u.test(body.lastName))
+      throw new BadRequestException('Invalid last name');
+    return ResponseHelper.Success(
+      'Registry provider is not configured; application queued for manual review',
+      { status: 'MANUAL_REVIEW', registryResult: 'UNAVAILABLE' },
+    );
   }
 
   async findOneFacility(uid: string) {

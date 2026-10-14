@@ -1,98 +1,197 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+The frontend origin must be included in the comma-separated `CORS_ORIGIN` list in production. The API uses `synchronize: false`:
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+## Request conventions
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+- Send and receive JSON. IDs are UUIDs except role IDs, which are integers.
+- Protected routes expect `Authorization: Bearer <token>`.
+- Access tokens expire after 15 minutes. Use the refresh endpoint to obtain a replacement.
+- Errors use `{ "success": false, "message": "...", "data": null }`.
+- Many established services return `{ "success": true, "message": "...", "data": ... }`. A few newer endpoints return their data directly. For frontend parsing, accept either an envelope or a direct result and unwrap `data` only when it exists.
+- Validation rejects unknown DTO properties. Use the field names shown below.
+- The global validation pipe transforms query parameters only when a handler explicitly converts them; send numeric query values as strings as usual in URLs.
 
-## Description
+Example request helper:
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+````ts
 
-## Project setup
 
-```bash
-$ npm install
-```
+## Routes
 
-## Compile and run the project
+### Auth and account
 
-```bash
-# development
-$ npm run start
+| Method  | Route                           | Auth                             | Payload / response                                                                                                                                           |
+| ------- | ------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST`  | `/auth/api/login`               | Public                           | `{ "email": "...", "password": "..." }`; response data contains `{ user, token, refreshToken }`. Store `token` for API calls and `refreshToken` for renewal. |
+| `POST`  | `/auth/api/refresh`             | Public, refresh token required   | `{ "refreshToken": "..." }`; returns new `{ token, refreshToken, expiresIn }`.                                                                               |
+| `GET`   | `/auth/api/log-out/:id`         | Bearer; ID must match token user | Revokes that user's refresh session.                                                                                                                         |
+| `GET`   | `/auth/api/ping-server`         | Public                           | Health check.                                                                                                                                                |
+| `POST`  | `/auth/api/forgot-password`     | Public                           | `{ "email": "..." }`. Email delivery is not connected; in non-production the response may include `demoResetToken`.                                          |
+| `POST`  | `/auth/api/reset-password`      | Public                           | `{ "token": "...", "password": "at-least-8-chars" }`.                                                                                                        |
+| `GET`   | `/api/me`                       | Bearer                           | Current user.                                                                                                                                                |
+| `PATCH` | `/api/me`                       | Bearer                           | Update current user fields accepted by the user service.                                                                                                     |
+| `POST`  | `/api/me/verification/resubmit` | Bearer                           | Returns `MANUAL_REVIEW` / `UNAVAILABLE` until registry integration is configured.                                                                            |
 
-# watch mode
-$ npm run start:dev
+### Registration, facilities, network, license check
 
-# production mode
-$ npm run start:prod
-```
+| Method   | Route                                     | Auth   | Payload / notes                                                                                                                                                                                                                                |
+| -------- | ----------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/hospital/api/register-facility`         | Public | `{ account_type, license: { number, registry, verification_status, registry_result }, facility: {...}, admin: {...} }`. Facility and admin shapes follow the existing create DTOs. Registry check is unavailable without MDCN/PCN credentials. |
+| `POST`   | `/api/verify-license`                     | Public | `{ "licenseNumber": "...", "registry": "MDCN", "lastName": "..." }`. Currently returns the manual-review/unavailable result.                                                                                                                   |
+| `GET`    | `/api/facilities?status=&q=&page=&limit=` | Bearer | Facility listing and counts.                                                                                                                                                                                                                   |
+| `GET`    | `/api/facilities/:id`                     | Bearer | Facility detail.                                                                                                                                                                                                                               |
+| `PATCH`  | `/api/facilities/:id`                     | Bearer | Update facility fields accepted by `UpdateHospitalDto`.                                                                                                                                                                                        |
+| `DELETE` | `/api/facilities/:id`                     | Bearer | Facility removal route.                                                                                                                                                                                                                        |
+| `GET`    | `/api/network`                            | Bearer | Facility network view.                                                                                                                                                                                                                         |
 
-## Run tests
+Legacy facility aliases are also available under `/hospital/api/find-all-facilities`, `/hospital/api/find-one-facility/:id`, `/hospital/api/update-one-facility/:id`, and `/hospital/api/delete-one-facility/:id`.
 
-```bash
-# unit tests
-$ npm run test
+### Dashboard and reports
 
-# e2e tests
-$ npm run test:e2e
+| Method | Route                    | Auth   | Payload / notes                                                                                                                                                             |
+| ------ | ------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/dashboard/summary` | Bearer | Computed network, inventory, expiry, and transfer totals. Some UI metrics return `null` until their source integration/data exists.                                         |
+| `GET`  | `/api/dashboard/charts`  | Bearer | Chart series derived from scans, stock, and transfers.                                                                                                                      |
+| `GET`  | `/api/public/stats`      | Public | Aggregated public network figures.                                                                                                                                          |
+| `POST` | `/api/reports/export`    | Bearer | `{ "type": "CSV", "from": "2026-01-01", "to": "2026-12-31" }`. CSV is returned in JSON as `data.csv`; PDF/XLSX return a queued demo job because workers are not configured. |
 
-# test coverage
-$ npm run test:cov
-```
+### Inventory, stock search, expiry
 
-## Deployment
+| Method   | Route                                                        | Auth   | Payload / notes                                                              |
+| -------- | ------------------------------------------------------------ | ------ | ---------------------------------------------------------------------------- |
+| `GET`    | `/api/inventory?category=all&facilityId=&q=&page=1&limit=25` | Bearer | Inventory rows and summary stats.                                            |
+| `POST`   | `/api/inventory`                                             | Bearer | Uses `CreateInventoryDto` (see `src/inventory/dto/create-inventory.dto.ts`). |
+| `GET`    | `/api/inventory/:id`                                         | Bearer | One stock item.                                                              |
+| `PATCH`  | `/api/inventory/:id`                                         | Bearer | Uses `UpdateInventoryDto`.                                                   |
+| `DELETE` | `/api/inventory/:id`                                         | Bearer | Remove an inventory row.                                                     |
+| `POST`   | `/api/inventory/:id/quarantine`                              | Bearer | Mark stock quarantined.                                                      |
+| `POST`   | `/api/inventory/:id/dispose`                                 | Bearer | Mark stock disposed.                                                         |
+| `GET`    | `/api/inventory/export.csv`                                  | Bearer | CSV export response.                                                         |
+| `GET`    | `/api/inventory/near-expiry?limit=7`                         | Bearer | Expiry watchlist.                                                            |
+| `GET`    | `/api/expiry?withinDays=60`                                  | Bearer | Expiring inventory and urgency data.                                         |
+| `GET`    | `/api/stock/search?q=&location=`                             | Public | Stock search for landing and prescription flows.                             |
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+### Scans and medicines
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+| Method | Route                       | Auth                     | Payload / notes                                                                                                                                 |
+| ------ | --------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/api/scans/decode`         | Bearer                   | `multipart/form-data`: `image` (JPEG/PNG, max 10 MB), `facilityId`, `action`, optional `notes`, `clientUuid`, and `clientTs`.                      |
+| `POST` | `/api/scans`                | Bearer                   | Uses `CreateScanLogDto` (see `src/scan_log/dto/create-scan_log.dto.ts`). Supports scan logging and client idempotency data defined in that DTO. |
+| `POST` | `/api/scans/batch`          | Bearer                   | JSON array of scan payloads, or `{ "scans": [...] }`; returns per-item processing results.                                                      |
+| `GET`  | `/api/scans/recent?limit=5` | Bearer                   | Recent scans.                                                                                                                                   |
+| `GET`  | `/api/scans/monthly`        | Bearer                   | Monthly scan counts.                                                                                                                            |
+| `GET`  | `/api/gs1/lookup?gtin=`     | Public                   | Find a medicine by GTIN.                                                                                                                        |
+| `GET`  | `/api/medicines`            | Existing medicine routes | List medicines. Create/update/delete routes use `/api/medicines` and `/api/medicines/:id`; lookup by GTIN is `/api/medicines/gtin/:gtin`.       |
 
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
+#### Camera decode request
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+`POST /api/scans/decode` decodes the captured image in memory and does not create scan, inventory, or audit rows. Its success `data` contains `identifiers` (`gtin`, `lot`, `expiry` as `YYYY-MM-DD`, `serial`), `validation` (`valid`, `status`, `messages`), and a public medicine summary or `null`. A readable but invalid code returns the decoded values with validation messages so the operator can correct them.
 
-## Resources
+#### Confirmed scan request
 
-Check out a few resources that may come in handy when working with NestJS:
+`POST /api/scans` JSON body (the authenticated user is derived from the bearer token; do not send `userId`):
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+```json
+{
+  "gtin": "09506000134352",
+  "lot": "LOT-2407A",
+  "expiry": "2027-07-31",
+  "serial": "8472901",
+  "facilityId": "<facility-uuid>",
+  "action": "NEW",
+  "notes": "Received from supplier",
+  "clientUuid": "<client-uuid>",
+  "clientTs": "2026-10-14T10:30:00.000Z"
+}
+````
 
-## Support
+`quantity` is optional and defaults to `1`. The facility must belong to the authenticated user unless the user has the Network Admin role. Scan writes update inventory and append a `GS1_SCAN` audit record. A repeated serial is returned as `FLAGGED`; retrying the same `clientUuid` returns the original result. Offline sync accepts a raw array or `{ "scans": [...] }` and processes each item independently.
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+Recent scans are facility-scoped for ordinary users; Network Admin can see network-wide results. The API returns display-safe fields. Monthly totals are real counts and can be empty. `/api/gs1/lookup?gtin=...` is public and returns non-sensitive product identity; an unknown GTIN returns `data: null`.
 
-## Stay in touch
+### Transfers
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+| Method | Route                                         | Auth   | Payload / notes                                                                                                                                          |
+| ------ | --------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/transfers?status=`                      | Bearer | List transfers; status is optional.                                                                                                                      |
+| `POST` | `/api/transfers`                              | Bearer | `{ "inventoryItemId": "uuid", "recipientFacilityId": "uuid", "quantity": 1 }`. Checks stock, donor/recipient, and 80 km when facility coordinates exist. |
+| `GET`  | `/api/transfers/stats`                        | Bearer | Pending and delivery counts.                                                                                                                             |
+| `GET`  | `/api/transfers/active-order`                 | Bearer | Timeline derived from transfer data; event timestamps are not fully recorded.                                                                            |
+| `GET`  | `/api/transfers/suggest?inventoryItemId=uuid` | Bearer | Nearby active facilities.                                                                                                                                |
+| `POST` | `/api/transfers/:id/approve`                  | Bearer | Approves and reserves quantity.                                                                                                                          |
+| `POST` | `/api/transfers/:id/reject`                   | Bearer | Rejects a pending request.                                                                                                                               |
+| `GET`  | `/api/transfers/:id`                          | Bearer | Transfer details.                                                                                                                                        |
 
-## License
+### Prescriptions and invoices
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+| Method  | Route                           | Auth     | Payload / notes                                                                                                                                                                                                                                                          |
+| ------- | ------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST`  | `/api/prescriptions`            | Bearer   | `{ "patient_ref": "pseudonymous-ref", "icd10": "C50.9", "tnm_stage": "...", "drug_id": "uuid", "qty": 1, "insurer": "...", "pharmacy_facility_id": "uuid", "prescriber_id": "uuid" }`. `icd10` must match `Cdd` or `Cdd.d[d]`. Patient reference should be pseudonymous. |
+| `GET`   | `/api/prescriptions?tab=active  | awaiting | completed`                                                                                                                                                                                                                                                               | Bearer | Returns `{ prescriptions, counts }`. |
+| `PATCH` | `/api/prescriptions/:id`        | Bearer   | Updates prescription fields.                                                                                                                                                                                                                                             |
+| `GET`   | `/api/prescriptions/:id/events` | Bearer   | Order timeline events.                                                                                                                                                                                                                                                   |
+| `POST`  | `/api/invoices`                 | Bearer   | Creates invoice record. Current endpoint expects invoice fields (`order_id`, `pharmacy_facility_id`, `total_naira`; optional `reference`).                                                                                                                               |
+| `GET`   | `/api/invoices/:reference`      | Public   | PII-minimized invoice lookup with item details and `isDemo: true`.                                                                                                                                                                                                       |
+| `GET`   | `/api/settlements/summary`      | Bearer   | Aggregated settlement values.                                                                                                                                                                                                                                            |
+
+Paystack checkout, payment verification, settlement creation from completed payments, and insurer authorization webhooks are not implemented yet. The frontend should present payment as unavailable/demo until those integrations are added.
+
+### Cold chain
+
+| Method           | Route                                                              | Auth          | Payload / notes                                                                                                                                                         |
+| ---------------- | ------------------------------------------------------------------ | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`            | `/api/storage-units`                                               | Bearer        | Facility-scoped real units with latest `currentC` (nullable), target range, `readingState` (`NOMINAL`, `BREACH`, `OFFLINE`), and last-seen time.                        |
+| `POST` / `PATCH` | `/api/storage-units[/:id]`                                         | Network Admin | Create/update unit metadata and temperature limits.                                                                                                                     |
+| `GET`            | `/api/cold-chain-events?unitId=&status=&from=&to=&page=1&limit=25` | Bearer        | Facility-scoped, paginated persisted events; status is `OPEN` or `RESOLVED`.                                                                                            |
+| `GET`            | `/api/coldchain/history?hours=24&unitId=`                          | Bearer        | Ascending persisted reading series for the caller's facility. `hours` is clamped to 1–720.                                                                              |
+| `GET`            | `/api/coldchain/stream`                                            | Bearer        | Authenticated SSE stream. Send `Last-Event-ID` on reconnect; events are scoped and replayed from the transactional outbox.                                              |
+| `POST`           | `/iot/readings`                                                    | Signed device | HMAC-authenticated batch; success is HTTP 202. Body: `{ "readings": [{ "unitId": "uuid", "celsius": 5.2, "recordedAt": "2026-10-14T10:30:00.000Z", "sequence": 1 }] }`. |
+| `GET` / `POST`   | `/api/iot/devices`                                                 | Network Admin | List safe device metadata or provision a device with `{ deviceId, facilityId, secretRef, unitIds, expectedIntervalSeconds, sensorMinCelsius, sensorMaxCelsius }`.       |
+| `GET`            | `/api/iot/devices/metrics`                                         | Network Admin | Process-local ingest counters for accepted/rejected/duplicate/delayed readings, breach/offline transitions, and outbox failures.                                        |
+| `POST`           | `/api/iot/devices/:id/rotate`                                      | Network Admin | `{ "secretRef": "ENV_SECRET_NAME" }`; only the reference and fingerprint are stored.                                                                                    |
+| `POST`           | `/api/iot/devices/:id/revoke`                                      | Network Admin | Revoke a device credential.                                                                                                                                             |
+
+Device credentials are configured on the API server as `IOT_DEVICE_KEYS={"ENV_SECRET_NAME":"long-random-secret"}` (or individual environment variables named by `secretRef`). Never send secret values in provisioning requests. The signature is lowercase hex HMAC-SHA256 over `timestamp.nonce.` followed by the exact raw JSON request bytes. Required headers are `X-Device-Id`, `X-Request-Timestamp` (Unix seconds/milliseconds or ISO timestamp), `X-Request-Nonce` (unique random value, 16–160 allowed characters), and `X-Request-Signature` (`sha256=<hex>` or `<hex>`). Timestamps are accepted within five minutes; nonce reuse is rejected. Device assignments and each reading's unit/facility are checked before persistence. The batch is validated as a whole, duplicate device sequence numbers are idempotently counted, and new readings, open/resolve events, inventory quarantine/recovery, and outbox rows are committed transactionally. In production behind a TLS reverse proxy, set `TRUST_PROXY=1` and prevent direct public access to the Nest process so the HTTPS check trusts only the configured proxy.
+
+Apply [`database/cold-chain-hardening.sql`](database/cold-chain-hardening.sql) after [`database/oncosourz-new-entities.sql`](database/oncosourz-new-entities.sql). The application uses `synchronize: false`; migration is required before enabling the new modules. Provisioning steps: configure a unique secret reference and secret in the deployment environment, create storage units, assign inventory by setting `storage_unit_id`, provision the device through the admin route, then have the sensor send signed requests over HTTPS. Configure TLS termination and `CORS_ORIGIN` for browser clients; device ingest is server-to-server and does not use bearer tokens. The outbox worker retries failed audit/notification work, and `/api/iot/devices/metrics` exposes process-local counters for accepted/rejected/duplicate/delayed readings, breach/offline transitions, and outbox failures. No automated raw-reading purge is enabled. Archive readings to encrypted, access-controlled storage after 24 months, retain them longer when linked to an unresolved breach or active investigation, and retain event/audit evidence under the organization's records policy; confirm applicable legal retention requirements before enabling archival automation.
+
+### Notifications, settings, audit
+
+| Method        | Route                                     | Auth   | Payload / notes                                                                                       |
+| ------------- | ----------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------- |
+| `GET`         | `/api/notifications?userId=`              | Bearer | List notifications.                                                                                   |
+| `PATCH`       | `/api/notifications/:id/read`             | Bearer | Mark notification as read.                                                                            |
+| `GET` / `PUT` | `/api/settings`                           | Bearer | Read or upsert settings as a JSON object keyed by setting name.                                       |
+| `GET`         | `/api/audit?type=&actor=&from=&to=&page=` | Bearer | Audit list filters depend on existing audit service fields.                                           |
+| `GET`         | `/api/audit/export.csv`                   | Bearer | CSV export.                                                                                           |
+| `GET`         | `/api/audit/verify`                       | Bearer | Verification status; hash-chain verification needs the existing audit schema to contain chain hashes. |
+
+### Users, roles, verification, research
+
+| Method  | Route                                                 | Auth                 | Payload / notes                                                                                                 |
+| ------- | ----------------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `GET`   | `/api/users?take=50&skip=0`                           | Bearer               | Paginated user list.                                                                                            |
+| `GET`   | `/api/users/:id`                                      | Bearer               | User detail.                                                                                                    |
+| `PATCH` | `/users/api/update-one-user/:id`                      | Existing route       | Update a user.                                                                                                  |
+| `GET`   | `/api/roles`                                          | Existing role routes | Role listing. Create/update/delete at `/api/roles` and `/api/roles/:id`.                                        |
+| `POST`  | `/api/verification-applications`                      | Public               | Create an application using entity fields: `user_id`, `registry`, `license_number`, optional `registry_result`. |
+| `GET`   | `/api/verification-applications?status=MANUAL_REVIEW` | Bearer               | Admin review list.                                                                                              |
+| `POST`  | `/api/verification-applications/:id/decision`         | Bearer               | `{ "status": "VERIFIED", "reviewer_id": "uuid", "reason": "..." }`.                                             |
+| `POST`  | `/api/research/inquiries`                             | Public               | `{ "name": "...", "organisation": "...", "email": "...", "message": "..." }`.                                   |
+| `GET`   | `/api/research/stats`                                 | Public               | Aggregated inquiry count.                                                                                       |
+
+External email delivery and CAPTCHA/rate limiting for public inquiry forms are not configured. Verification endpoints persist review applications but do not update the existing user schema's verification status.
+
+## Frontend mapping
+
+- Auth screens: `/auth/api/login`, `/auth/api/refresh`, `/hospital/api/register-facility`.
+- Dashboard: `/api/dashboard/summary`, `/api/dashboard/charts`, `/api/notifications`.
+- Inventory and scan screens: `/api/inventory`, `/api/expiry`, `/api/scans`, `/api/gs1/lookup`.
+- Transfer screen: `/api/transfers` routes.
+- Prescription and payment screens: `/api/prescriptions`, `/api/invoices`; payment actions remain external integration work.
+- Cold chain: `/api/storage-units`, `/api/cold-chain-events`, `/api/coldchain/history`, and `/api/coldchain/stream`; data comes from configured storage units and signed sensor readings.
+- Settings and profile: `/api/settings`, `/api/me`.
+- Research forms: `/api/research/inquiries`.
+
+## Scanner database change
+
+The API uses `synchronize: false`. Apply [database/gs1-scanner.sql](database/gs1-scanner.sql) once to add persisted idempotency, facility scope, action, and audit metadata to the existing `scan_logs` table before using the scanner routes.

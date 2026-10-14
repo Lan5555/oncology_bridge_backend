@@ -12,9 +12,9 @@ export class AuditLog {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @ManyToOne(() => User)
+  @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'user_id' })
-  user!: User;
+  user!: User | null;
 
   @Column()
   action!: string;
@@ -24,6 +24,9 @@ export class AuditLog {
 
   @Column()
   ip_address!: string;
+
+  @Column({ type: 'uuid', nullable: true, unique: true })
+  event_key!: string | null;
 
   @CreateDateColumn()
   created_at!: Date;

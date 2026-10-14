@@ -1,11 +1,24 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  UseGuards,
+} from '@nestjs/common';
+import { AuthGuard } from '../guards/auth.guard';
 import { CourierAssignmentService } from './courier_assignment.service';
 import { CreateCourierAssignmentDto } from './dto/create-courier_assignment.dto';
 import { UpdateCourierAssignmentDto } from './dto/update-courier_assignment.dto';
 
 @Controller('courier-assignment')
+@UseGuards(AuthGuard)
 export class CourierAssignmentController {
-  constructor(private readonly courierAssignmentService: CourierAssignmentService) {}
+  constructor(
+    private readonly courierAssignmentService: CourierAssignmentService,
+  ) {}
 
   @Post()
   create(@Body() createCourierAssignmentDto: CreateCourierAssignmentDto) {
@@ -19,16 +32,19 @@ export class CourierAssignmentController {
 
   @Get(':id')
   findOne(@Param('id') id: string) {
-    return this.courierAssignmentService.findOne(+id);
+    return this.courierAssignmentService.findOne(id);
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() updateCourierAssignmentDto: UpdateCourierAssignmentDto) {
-    return this.courierAssignmentService.update(+id, updateCourierAssignmentDto);
+  update(
+    @Param('id') id: string,
+    @Body() updateCourierAssignmentDto: UpdateCourierAssignmentDto,
+  ) {
+    return this.courierAssignmentService.update(id, updateCourierAssignmentDto);
   }
 
   @Delete(':id')
   remove(@Param('id') id: string) {
-    return this.courierAssignmentService.remove(+id);
+    return this.courierAssignmentService.remove(id);
   }
 }

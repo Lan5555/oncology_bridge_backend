@@ -42,6 +42,9 @@ export class Inventory {
   })
   status!: string;
 
+  @Column({ type: 'uuid', nullable: true })
+  storage_unit_id!: string | null;
+
   @CreateDateColumn()
   created_at!: Date;
 

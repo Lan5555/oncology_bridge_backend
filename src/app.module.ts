@@ -24,6 +24,16 @@ import { GuardsModule } from './guards/guards.module';
 import { AuthModule } from './auth/auth.module';
 import { JwtModule } from '@nestjs/jwt';
 import { EncryptionModule } from './encryption/encryption.module';
+import { DashboardModule } from './dashboard/dashboard.module';
+import { PrescriptionsModule } from './prescriptions/prescriptions.module';
+import { InvoicesModule } from './invoices/invoices.module';
+import { SettingsModule } from './settings/settings.module';
+import { ResearchInquiriesModule } from './research_inquiries/research-inquiries.module';
+import { VerificationApplicationsModule } from './verification_applications/verification-applications.module';
+import { StorageUnitsModule } from './storage_units/storage-units.module';
+import { ColdChainEventsModule } from './cold_chain_events/cold-chain-events.module';
+import { FacilityDevicesModule } from './facility_devices/facility-devices.module';
+import { IotDevicesModule } from './iot_devices/iot-devices.module';
 
 @Module({
   imports: [
@@ -83,6 +93,16 @@ import { EncryptionModule } from './encryption/encryption.module';
     GuardsModule,
     AuthModule,
     EncryptionModule,
+    DashboardModule,
+    PrescriptionsModule,
+    InvoicesModule,
+    SettingsModule,
+    ResearchInquiriesModule,
+    VerificationApplicationsModule,
+    StorageUnitsModule,
+    ColdChainEventsModule,
+    FacilityDevicesModule,
+    IotDevicesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -23,6 +23,9 @@ export class Notification {
   @Column('text')
   message!: string;
 
+  @Column({ type: 'uuid', nullable: true })
+  cold_chain_outbox_id!: string | null;
+
   @Column({
     default: false,
   })

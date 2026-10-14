@@ -1,9 +1,20 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  UseGuards,
+} from '@nestjs/common';
+import { AuthGuard } from '../guards/auth.guard';
 import { CourierService } from './courier.service';
 import { CreateCourierDto } from './dto/create-courier.dto';
 import { UpdateCourierDto } from './dto/update-courier.dto';
 
 @Controller('courier')
+@UseGuards(AuthGuard)
 export class CourierController {
   constructor(private readonly courierService: CourierService) {}
 
@@ -19,16 +30,16 @@ export class CourierController {
 
   @Get(':id')
   findOne(@Param('id') id: string) {
-    return this.courierService.findOne(+id);
+    return this.courierService.findOne(id);
   }
 
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateCourierDto: UpdateCourierDto) {
-    return this.courierService.update(+id, updateCourierDto);
+    return this.courierService.update(id, updateCourierDto);
   }
 
   @Delete(':id')
   remove(@Param('id') id: string) {
-    return this.courierService.remove(+id);
+    return this.courierService.remove(id);
   }
 }

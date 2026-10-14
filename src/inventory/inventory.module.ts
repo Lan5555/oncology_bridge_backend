@@ -1,12 +1,24 @@
 import { Module } from '@nestjs/common';
 import { InventoryService } from './inventory.service';
-import { InventoryController } from './inventory.controller';
+import {
+  ExpiryController,
+  InventoryController,
+  NearExpiryController,
+  StockSearchController,
+} from './inventory.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Inventory } from './entities/inventory.entity';
+import { Hospital } from '../hospital/entities/hospital.entity';
+import { Medicine } from '../medicine/entities/medicine.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Inventory])],
-  controllers: [InventoryController],
+  imports: [TypeOrmModule.forFeature([Inventory, Hospital, Medicine])],
+  controllers: [
+    InventoryController,
+    StockSearchController,
+    ExpiryController,
+    NearExpiryController,
+  ],
   providers: [InventoryService],
 })
 export class InventoryModule {}

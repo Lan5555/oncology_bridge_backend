@@ -1,11 +1,24 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  UseGuards,
+} from '@nestjs/common';
+import { AuthGuard } from '../guards/auth.guard';
 import { InsuranceProviderService } from './insurance_provider.service';
 import { CreateInsuranceProviderDto } from './dto/create-insurance_provider.dto';
 import { UpdateInsuranceProviderDto } from './dto/update-insurance_provider.dto';
 
 @Controller('insurance-provider')
+@UseGuards(AuthGuard)
 export class InsuranceProviderController {
-  constructor(private readonly insuranceProviderService: InsuranceProviderService) {}
+  constructor(
+    private readonly insuranceProviderService: InsuranceProviderService,
+  ) {}
 
   @Post()
   create(@Body() createInsuranceProviderDto: CreateInsuranceProviderDto) {
@@ -19,16 +32,19 @@ export class InsuranceProviderController {
 
   @Get(':id')
   findOne(@Param('id') id: string) {
-    return this.insuranceProviderService.findOne(+id);
+    return this.insuranceProviderService.findOne(id);
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() updateInsuranceProviderDto: UpdateInsuranceProviderDto) {
-    return this.insuranceProviderService.update(+id, updateInsuranceProviderDto);
+  update(
+    @Param('id') id: string,
+    @Body() updateInsuranceProviderDto: UpdateInsuranceProviderDto,
+  ) {
+    return this.insuranceProviderService.update(id, updateInsuranceProviderDto);
   }
 
   @Delete(':id')
   remove(@Param('id') id: string) {
-    return this.insuranceProviderService.remove(+id);
+    return this.insuranceProviderService.remove(id);
   }
 }

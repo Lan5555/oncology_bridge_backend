@@ -61,11 +61,12 @@ export class UsersService {
         allowed_ip: ip,
       };
       const user = this.userRepository.create(payload);
-      await this.userRepository.save(user);
+      const savedUser = await this.userRepository.save(user);
+      const { password_hash, email_hash, phone_hash, ...safeUser } = savedUser;
       return ResponseHelper.Success('Created Successfully', {
-        ...user,
-        phone: this.encryptionService.decrypt(user.phone),
-        email: this.encryptionService.decrypt(user.email),
+        ...safeUser,
+        phone: this.encryptionService.decrypt(savedUser.phone),
+        email: this.encryptionService.decrypt(savedUser.email),
       });
     } catch (e) {
       return ResponseHelper.Error(e, null);
@@ -98,16 +99,15 @@ export class UsersService {
         phone_hash: this.encryptionService.hash(createUserDto.phone),
         email_hash: this.encryptionService.hash(createUserDto.email),
       };
-      await this.userRepository.save(payload);
-      const { password_hash, ...userData } = user;
-      return ResponseHelper.Success<Omit<User, 'password_hash'>>(
-        'Processed Successfully',
-        {
-          ...userData,
-          email: this.encryptionService.decrypt(userData.email),
-          phone: this.encryptionService.decrypt(userData.phone),
-        },
-      );
+      const savedUser = await this.userRepository.save(payload);
+      const { password_hash, email_hash, phone_hash, ...userData } = savedUser;
+      return ResponseHelper.Success<
+        Omit<User, 'password_hash' | 'email_hash' | 'phone_hash'>
+      >('Processed Successfully', {
+        ...userData,
+        email: this.encryptionService.decrypt(userData.email),
+        phone: this.encryptionService.decrypt(userData.phone),
+      });
     } catch (e) {
       return ResponseHelper.Error(e);
     }
@@ -126,12 +126,16 @@ export class UsersService {
       if (!users) return ResponseHelper.Error<null>('No users found', null);
       const usersData = users.map((user) => {
         const { password_hash, email_hash, phone_hash, ...u } = user;
-        const h = CleanResponse.cleanPlain<Hospital>(u.hospital);
-        const cleanHospital = {
-          ...h,
-          phone: this.encryptionService.decrypt(h.phone),
-          email: this.encryptionService.decrypt(h.email),
-        };
+        const h = u.hospital
+          ? CleanResponse.cleanPlain<Hospital>(u.hospital)
+          : null;
+        const cleanHospital = h
+          ? {
+              ...h,
+              phone: this.encryptionService.decrypt(h.phone),
+              email: this.encryptionService.decrypt(h.email),
+            }
+          : null;
         return {
           ...u,
           phone: this.encryptionService.decrypt(u.phone),
@@ -149,17 +153,19 @@ export class UsersService {
 
   async findOneUser(id: string) {
     try {
-      const user = await this.userRepository.findOneBy({ id });
+      const user = await this.userRepository.findOne({
+        where: { id },
+        relations: { role: true, hospital: true },
+      });
       if (!user) return ResponseHelper.Error('User not found', null);
-      const { password_hash, ...userData } = user;
-      return ResponseHelper.Success<Omit<User, 'password_hash'>>(
-        'Processed Successfuly',
-        {
-          ...userData,
-          phone: this.encryptionService.decrypt(user.phone),
-          email: this.encryptionService.decrypt(user.email),
-        },
-      );
+      const { password_hash, email_hash, phone_hash, ...userData } = user;
+      return ResponseHelper.Success<
+        Omit<User, 'password_hash' | 'email_hash' | 'phone_hash'>
+      >('Processed Successfuly', {
+        ...userData,
+        phone: this.encryptionService.decrypt(user.phone),
+        email: this.encryptionService.decrypt(user.email),
+      });
     } catch (e) {
       return ResponseHelper.Error(e);
     }
@@ -172,12 +178,14 @@ export class UsersService {
       return ResponseHelper.Error('User not found', null);
     }
 
-    // Encrypt only the fields that require it
+    // Recompute blind indexes whenever encrypted identifiers change.
     if (updateUserDto.email) {
+      user.email_hash = this.encryptionService.hash(updateUserDto.email);
       updateUserDto.email = this.encryptionService.encrypt(updateUserDto.email);
     }
 
     if (updateUserDto.phone) {
+      user.phone_hash = this.encryptionService.hash(updateUserDto.phone);
       updateUserDto.phone = this.encryptionService.encrypt(updateUserDto.phone);
     }
 
@@ -190,18 +198,21 @@ export class UsersService {
     updatedUser.email = this.encryptionService.decrypt(updatedUser.email);
     updatedUser.phone = this.encryptionService.decrypt(updatedUser.phone);
     const { password_hash, ...u } = updatedUser;
-    return ResponseHelper.Success<Omit<User, 'password_hash'>>(
-      'User updated successfully',
-      u,
-    );
+    return ResponseHelper.Success<
+      Omit<User, 'password_hash' | 'email_hash' | 'phone_hash'>
+    >('User updated successfully', u);
   }
 
   async removeUser(id: string) {
     try {
       const user = await this.userRepository.findOneBy({ id });
       if (!user) return ResponseHelper.Error('User not found', null);
-      await this.userRepository.remove(user);
-      return ResponseHelper.Success<null>('User deleted Successfully', null);
+      user.active = false;
+      await this.userRepository.save(user);
+      return ResponseHelper.Success<null>(
+        'User deactivated successfully',
+        null,
+      );
     } catch (e) {
       return ResponseHelper.Error(e);
     }
