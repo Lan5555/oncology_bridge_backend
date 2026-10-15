@@ -30,6 +30,8 @@ export class TemperatureLogService {
 
     const role = actor.role?.name?.trim().toLowerCase();
     const networkAdmin = [
+      'admin',
+      'superadmin',
       'network admin',
       'network_admin',
       'network-admin',

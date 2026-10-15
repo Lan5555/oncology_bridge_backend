@@ -1,0 +1,66 @@
+import {
+  CanActivate,
+  ExecutionContext,
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { DataSource } from 'typeorm';
+import { User } from '../users/entities/user.entity';
+import { RolePermission } from '../role/entities/role-permission.entity';
+
+@Injectable()
+export class NetworkAdminGuard implements CanActivate {
+  constructor(private readonly dataSource: DataSource) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request = context.switchToHttp().getRequest<{
+      user?: { id?: string; mfa?: boolean; amr?: string[] };
+      method: string;
+      path: string;
+    }>();
+    if (!request.user?.id) throw new UnauthorizedException();
+    const user = await this.dataSource.getRepository(User).findOne({
+      where: { id: request.user.id },
+      relations: { role: true },
+    });
+    const role = user?.role?.name.trim().toLowerCase();
+    if (!user?.active || !['admin', 'c', 'network admin', 'network_admin', 'network-admin', 'superadmin'].includes(role ?? ''))
+      throw new ForbiddenException('Network Admin role required');
+    const permission = this.requiredPermission(request.method, request.path);
+    const permissionRepo = this.dataSource.getRepository(RolePermission);
+    const grants = await permissionRepo.findBy({ role_id: user.role.id });
+    const assigned = new Set(grants.map((grant) => grant.permission));
+    if (!assigned.has('admin.access') || !assigned.has(permission))
+      throw new ForbiddenException(`Missing permission: ${!assigned.has('admin.access') ? 'admin.access' : permission}`);
+    if (process.env.ADMIN_MFA_REQUIRED === 'true' && request.user.mfa !== true && !request.user.amr?.includes('mfa'))
+      throw new ForbiddenException('MFA is required for network administration');
+    return true;
+  }
+
+  private requiredPermission(method: string, path: string): string {
+    const p = path.toLowerCase();
+    if (p.startsWith('/admin/api/verifications'))
+      return method === 'GET' ? 'verification.read' : 'verification.decide';
+    if (p.startsWith('/admin/api/integrations')) {
+      if (p.endsWith('/sync')) return 'integration.sync';
+      if (p.endsWith('/test') || p.endsWith('/configuration'))
+        return method === 'GET' ? 'integration.manage' : 'integration.manage';
+      return 'integration.read';
+    }
+    if (p.startsWith('/api/dashboard')) return 'dashboard.read';
+    if (p.startsWith('/api/settlements')) return 'settlement.read';
+    if (p.startsWith('/api/audit') || p.startsWith('/audit-log'))
+      return p.endsWith('/export.csv') ? 'audit.export' : 'audit.read';
+    if (p.startsWith('/api/roles') || p.startsWith('/role'))
+      return method === 'GET' ? 'role.read' : 'role.update';
+    if (p.startsWith('/api/users') || p.startsWith('/users'))
+      return method === 'GET' ? 'user.read' : 'user.update';
+    if (p.startsWith('/hospital/api') || p.startsWith('/api/facilities') || p.startsWith('/api/network')) {
+      if (method === 'GET') return 'facility.read';
+      if (method === 'DELETE') return 'facility.delete';
+      return 'facility.update';
+    }
+    return 'admin.access';
+  }
+}

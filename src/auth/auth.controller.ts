@@ -8,6 +8,7 @@ import {
   UseGuards,
   ForbiddenException,
   Req,
+  Ip,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
@@ -20,8 +21,8 @@ type RequestWithUser = Request & { user?: { id: string } };
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
   @Post('/api/login')
-  async login(@Body() body: AuthDto) {
-    return this.authService.loginUser(body);
+  async login(@Body() body: AuthDto, @Ip() ip: string) {
+    return this.authService.loginUser(body, ip);
   }
   @Post('/api/refresh') refresh(
     @Body() body: { token?: string; refreshToken?: string },

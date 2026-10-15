@@ -89,6 +89,18 @@ export class Hospital {
   })
   status!: FacilityStatus;
 
+  @Column('text', { array: true, default: '{}' })
+  ip_whitelist!: string[];
+
+  @Column({ type: 'boolean', default: true })
+  membership_open!: boolean;
+
+  @Column('text', { nullable: true })
+  admin_note!: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  deleted_at!: Date | null;
+
   @CreateDateColumn()
   created_at!: Date;
 

@@ -1,7 +1,6 @@
 /* eslint-disable @typescript-eslint/no-base-to-string */
 /* eslint-disable @typescript-eslint/no-misused-promises */
-/* eslint-disable @typescript-eslint/no-unsafe-member-access */
-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
+
 import {
   BadRequestException,
   ForbiddenException,
@@ -232,8 +231,12 @@ export class ColdChainEventsService {
 
   private isNetworkAdmin(user: User) {
     const role = user.role?.name?.trim().toLowerCase();
-    return ['network admin', 'network_admin', 'network-admin'].includes(
-      role ?? '',
-    );
+    return [
+      'admin',
+      'superadmin',
+      'network admin',
+      'network_admin',
+      'network-admin',
+    ].includes(role ?? '');
   }
 }

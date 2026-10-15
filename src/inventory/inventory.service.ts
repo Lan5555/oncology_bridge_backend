@@ -23,8 +23,11 @@ export class InventoryService {
     private readonly medicines: Repository<Medicine>,
   ) {}
 
-  async create(dto: CreateInventoryDto) {
-    const hospitalId = dto.facilityId ?? dto.hospitalId;
+  async create(dto: CreateInventoryDto, authenticatedFacilityId?: string) {
+    const requestedHospitalId = dto.facilityId ?? dto.hospitalId;
+    if (authenticatedFacilityId !== undefined && requestedHospitalId && requestedHospitalId !== authenticatedFacilityId)
+      throw new BadRequestException('Inventory can only be created for your authenticated facility');
+    const hospitalId = authenticatedFacilityId !== undefined ? authenticatedFacilityId : requestedHospitalId;
     const medicineId = dto.drugId ?? dto.medicineId;
     const batchNumber = dto.batchNumber ?? dto.batch_number;
     const expiryDate = dto.expiry ?? dto.expiry_date;
@@ -72,6 +75,7 @@ export class InventoryService {
     options: {
       category?: string;
       facilityId?: string;
+      authenticatedFacilityId?: string;
       q?: string;
       page?: number;
       limit?: number;
@@ -83,7 +87,11 @@ export class InventoryService {
       .createQueryBuilder('i')
       .leftJoinAndSelect('i.medicine', 'medicine')
       .leftJoinAndSelect('i.hospital', 'hospital');
-    if (options.facilityId)
+    if (options.authenticatedFacilityId !== undefined)
+      qb.andWhere('hospital.id = :authenticatedFacilityId', {
+        authenticatedFacilityId: options.authenticatedFacilityId,
+      });
+    else if (options.facilityId)
       qb.andWhere('hospital.id = :facilityId', {
         facilityId: options.facilityId,
       });
@@ -110,9 +118,13 @@ export class InventoryService {
       .take(limit)
       .getManyAndCount();
     const statsQb = this.inventory.createQueryBuilder('i');
+    if (options.authenticatedFacilityId !== undefined)
+      statsQb.andWhere('i.hospital_id = :facilityId', { facilityId: options.authenticatedFacilityId });
     const [all, quarantined] = await Promise.all([
       statsQb.getMany(),
-      this.inventory.count({ where: { status: 'QUARANTINED' } }),
+      this.inventory.createQueryBuilder('i').where("i.status = 'QUARANTINED'")
+        .andWhere(options.authenticatedFacilityId !== undefined ? 'i.hospital_id = :facilityId' : '1=1', { facilityId: options.authenticatedFacilityId })
+        .getCount(),
     ]);
     const expiryCount = all.filter(
       (i) =>
@@ -153,18 +165,20 @@ export class InventoryService {
     });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, authenticatedFacilityId?: string) {
     const item = await this.inventory.findOne({
-      where: { id },
+      where: { id, ...(authenticatedFacilityId !== undefined ? { hospital: { id: authenticatedFacilityId } } : {}) },
       relations: { hospital: true, medicine: true },
     });
     if (!item) throw new NotFoundException('Inventory item not found');
     return ResponseHelper.Success('Inventory item retrieved', item);
   }
 
-  async update(id: string, dto: UpdateInventoryDto) {
-    const item = await this.inventory.findOneBy({ id });
+  async update(id: string, dto: UpdateInventoryDto, authenticatedFacilityId?: string) {
+    const item = await this.inventory.findOne({ where: { id }, relations: { hospital: true } });
     if (!item) throw new NotFoundException('Inventory item not found');
+    if (authenticatedFacilityId !== undefined && item.hospital?.id !== authenticatedFacilityId)
+      throw new NotFoundException('Inventory item not found');
     const {
       hospitalId,
       facilityId,
@@ -183,6 +197,8 @@ export class InventoryService {
     if (expiry_date ?? expiry)
       item.expiry_date = new Date(expiry ?? expiry_date!);
     const selectedHospital = facilityId ?? hospitalId;
+    if (authenticatedFacilityId !== undefined && selectedHospital && selectedHospital !== authenticatedFacilityId)
+      throw new BadRequestException('Inventory cannot be moved outside your authenticated facility');
     if (selectedHospital) {
       const h = await this.hospitals.findOneBy({ id: selectedHospital });
       if (!h) throw new NotFoundException('Facility not found');
@@ -208,9 +224,11 @@ export class InventoryService {
     );
   }
 
-  async setStatus(id: string, status: string) {
-    const item = await this.inventory.findOneBy({ id });
+  async setStatus(id: string, status: string, authenticatedFacilityId?: string) {
+    const item = await this.inventory.findOne({ where: { id }, relations: { hospital: true } });
     if (!item) throw new NotFoundException('Inventory item not found');
+    if (authenticatedFacilityId !== undefined && item.hospital?.id !== authenticatedFacilityId)
+      throw new NotFoundException('Inventory item not found');
     item.status = status;
     return ResponseHelper.Success(
       `Inventory item marked ${status.toLowerCase()}`,
@@ -218,15 +236,15 @@ export class InventoryService {
     );
   }
 
-  async remove(id: string) {
-    const result = await this.inventory.delete({ id });
+  async remove(id: string, authenticatedFacilityId?: string) {
+    const result = await this.inventory.delete({ id, ...(authenticatedFacilityId !== undefined ? { hospital: { id: authenticatedFacilityId } } : {}) });
     if (!result.affected)
       throw new NotFoundException('Inventory item not found');
     return ResponseHelper.Success('Inventory item removed', null);
   }
 
-  async exportCsv() {
-    const { data } = await this.findAll({ limit: 100 });
+  async exportCsv(authenticatedFacilityId?: string) {
+    const { data } = await this.findAll({ limit: 100, authenticatedFacilityId });
     const rows = (data as any).items as any[];
     const escape = (value: unknown) =>
       `"${String(value ?? '').replace(/"/g, '""')}"`;
@@ -241,11 +259,13 @@ export class InventoryService {
     return ResponseHelper.Success('Inventory CSV generated', { csv });
   }
 
-  async stockSearch(q = '', location = '') {
+  async stockSearch(q = '', location = '', authenticatedFacilityId?: string) {
     const qb = this.inventory
       .createQueryBuilder('i')
       .leftJoinAndSelect('i.medicine', 'medicine')
       .leftJoinAndSelect('i.hospital', 'hospital');
+    if (authenticatedFacilityId !== undefined)
+      qb.andWhere('hospital.id = :facilityId', { facilityId: authenticatedFacilityId });
     if (q)
       qb.andWhere(
         '(medicine.generic_name ILIKE :q OR medicine.brand_name ILIKE :q OR medicine.gtin ILIKE :q)',
@@ -278,7 +298,7 @@ export class InventoryService {
     );
   }
 
-  async findExpiry(withinDays = 60, limit = 500) {
+  async findExpiry(withinDays = 60, limit = 500, authenticatedFacilityId?: string) {
     const now = new Date();
     const until = new Date(now);
     until.setDate(until.getDate() + Math.max(1, withinDays));
@@ -287,6 +307,7 @@ export class InventoryService {
       .leftJoinAndSelect('i.medicine', 'medicine')
       .leftJoinAndSelect('i.hospital', 'hospital')
       .where('i.expiry_date BETWEEN :now AND :until', { now, until })
+      .andWhere(authenticatedFacilityId !== undefined ? 'hospital.id = :facilityId' : '1=1', { facilityId: authenticatedFacilityId })
       .andWhere("UPPER(i.status) NOT IN ('QUARANTINED','DISPOSED')")
       .orderBy('i.expiry_date', 'ASC')
       .take(Math.min(500, Math.max(1, limit)))

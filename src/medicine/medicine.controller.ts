@@ -8,11 +8,18 @@ import {
   Delete,
   Query,
   UseGuards,
+  Req,
+  Ip,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { AuthGuard } from '../guards/auth.guard';
 import { MedicineService } from './medicine.service';
 import { CreateMedicineDto } from './dto/create-medicine.dto';
-import { UpdateMedicineDto } from './dto/update-medicine.dto';
+import { NetworkAdminGuard } from '../guards/network-admin.guard';
+import { MedicineCatalogGuard } from '../guards/medicine-catalog.guard';
+import { PatchMedicineCatalogDto } from './dto/patch-medicine-catalog.dto';
+
+type CatalogRequest = Request & { user?: { id: string } };
 
 @Controller(['medicine', 'api/medicines'])
 @UseGuards(AuthGuard)
@@ -20,6 +27,7 @@ export class MedicineController {
   constructor(private readonly medicineService: MedicineService) {}
 
   @Post()
+  @UseGuards(NetworkAdminGuard)
   create(@Body() createMedicineDto: CreateMedicineDto) {
     return this.medicineService.create(createMedicineDto);
   }
@@ -39,16 +47,20 @@ export class MedicineController {
   }
 
   @Patch(':id')
+  @UseGuards(MedicineCatalogGuard)
   update(
     @Param('id') id: string,
-    @Body() updateMedicineDto: UpdateMedicineDto,
+    @Body() updateMedicineDto: PatchMedicineCatalogDto,
+    @Req() req: CatalogRequest,
+    @Ip() ip: string,
   ) {
-    return this.medicineService.update(id, updateMedicineDto);
+    return this.medicineService.update(id, updateMedicineDto, req.user!.id, ip);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.medicineService.remove(id);
+  @UseGuards(MedicineCatalogGuard)
+  remove(@Param('id') id: string, @Req() req: CatalogRequest, @Ip() ip: string) {
+    return this.medicineService.remove(id, req.user!.id, ip);
   }
 }
 

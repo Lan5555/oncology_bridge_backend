@@ -23,7 +23,7 @@ export class TransferRequestsService {
     @InjectRepository(Hospital)
     private readonly hospitals: Repository<Hospital>,
   ) {}
-  async create(dto: CreateTransferRequestDto) {
+  async create(dto: CreateTransferRequestDto, facilityScope?: string) {
     const [item, recipient] = await Promise.all([
       this.inventory.findOne({
         where: { id: dto.inventoryItemId },
@@ -35,6 +35,8 @@ export class TransferRequestsService {
       throw new NotFoundException(
         'Inventory item or recipient facility not found',
       );
+    if (facilityScope !== undefined && item.hospital.id !== facilityScope)
+      throw new NotFoundException('Inventory item not found in your facility');
     const qty = Number(dto.quantity);
     if (!Number.isInteger(qty) || qty < 1)
       throw new BadRequestException('quantity must be a positive integer');
@@ -80,9 +82,11 @@ export class TransferRequestsService {
       await this.transfers.save(transfer),
     );
   }
-  async findAll(status?: string) {
+  async findAll(status?: string, facilityScope?: string) {
     const rows = await this.transfers.find({
-      where: status ? { status } : {},
+      where: facilityScope !== undefined
+        ? [{ ...(status ? { status } : {}), fromHospital: { id: facilityScope } }, { ...(status ? { status } : {}), toHospital: { id: facilityScope } }]
+        : status ? { status } : {},
       relations: {
         fromHospital: true,
         toHospital: true,
@@ -93,7 +97,7 @@ export class TransferRequestsService {
     });
     return ResponseHelper.Success('Transfers retrieved', rows);
   }
-  async findOne(id: string) {
+  async findOne(id: string, facilityScope?: string) {
     const row = await this.transfers.findOne({
       where: { id },
       relations: {
@@ -105,14 +109,18 @@ export class TransferRequestsService {
       },
     });
     if (!row) throw new NotFoundException('Transfer not found');
+    if (facilityScope !== undefined && row.fromHospital.id !== facilityScope && row.toHospital.id !== facilityScope)
+      throw new NotFoundException('Transfer not found');
     return ResponseHelper.Success('Transfer retrieved', row);
   }
-  async decide(id: string, approved: boolean, actorId?: string) {
+  async decide(id: string, approved: boolean, actorId?: string, facilityScope?: string) {
     const row = await this.transfers.findOne({
       where: { id },
-      relations: { inventory: true },
+      relations: { inventory: true, fromHospital: true, toHospital: true },
     });
     if (!row) throw new NotFoundException('Transfer not found');
+    if (facilityScope !== undefined && row.toHospital.id !== facilityScope)
+      throw new NotFoundException('Transfer not found for this facility');
     if (!['PENDING', 'PENDING_APPROVAL'].includes(row.status))
       throw new BadRequestException('Transfer is no longer awaiting approval');
     if (approved && row.inventory.quantity < row.quantity)
@@ -129,18 +137,24 @@ export class TransferRequestsService {
       await this.transfers.save(row),
     );
   }
-  async update(id: string, dto: UpdateTransferRequestDto) {
-    const row = await this.transfers.findOneBy({ id });
+  async update(id: string, dto: UpdateTransferRequestDto, facilityScope?: string) {
+    const row = await this.transfers.findOne({ where: { id }, relations: { fromHospital: true, toHospital: true } });
     if (!row) throw new NotFoundException('Transfer not found');
+    if (facilityScope !== undefined && row.fromHospital.id !== facilityScope && row.toHospital.id !== facilityScope)
+      throw new NotFoundException('Transfer not found');
+    if (facilityScope !== undefined && ('recipientFacilityId' in dto || 'fromHospital' in dto || 'toHospital' in dto))
+      throw new BadRequestException('Facility scope cannot be changed by a member');
     Object.assign(row, dto);
     return ResponseHelper.Success(
       'Transfer updated',
       await this.transfers.save(row),
     );
   }
-  async remove(id: string) {
-    const row = await this.transfers.findOneBy({ id });
+  async remove(id: string, facilityScope?: string) {
+    const row = await this.transfers.findOne({ where: { id }, relations: { fromHospital: true, toHospital: true } });
     if (!row) throw new NotFoundException('Transfer not found');
+    if (facilityScope !== undefined && row.fromHospital.id !== facilityScope)
+      throw new NotFoundException('Transfer not found');
     if (
       row.status === 'APPROVED' ||
       row.status === 'IN_TRANSIT' ||
@@ -150,8 +164,10 @@ export class TransferRequestsService {
     await this.transfers.remove(row);
     return ResponseHelper.Success('Transfer deleted', null);
   }
-  async stats() {
-    const rows = await this.transfers.find();
+  async stats(facilityScope?: string) {
+    const rows = await this.transfers.find({ where: facilityScope !== undefined
+      ? [{ fromHospital: { id: facilityScope } }, { toHospital: { id: facilityScope } }]
+      : {} });
     return ResponseHelper.Success('Transfer statistics retrieved', {
       pending: rows.filter((r) =>
         ['PENDING', 'PENDING_APPROVAL'].includes(r.status),
@@ -159,9 +175,11 @@ export class TransferRequestsService {
       recentDeliveries: rows.filter((r) => r.status === 'DELIVERED').length,
     });
   }
-  async activeOrder() {
+  async activeOrder(facilityScope?: string) {
     const row = await this.transfers.findOne({
-      where: { status: 'IN_TRANSIT' },
+      where: facilityScope !== undefined
+        ? [{ status: 'IN_TRANSIT', fromHospital: { id: facilityScope } }, { status: 'IN_TRANSIT', toHospital: { id: facilityScope } }]
+        : { status: 'IN_TRANSIT' },
       relations: {
         fromHospital: true,
         toHospital: true,
@@ -195,12 +213,14 @@ export class TransferRequestsService {
         'Derived from transfer fields; order event timestamps are not stored in the existing schema',
     });
   }
-  async suggest(inventoryItemId: string) {
+  async suggest(inventoryItemId: string, facilityScope?: string) {
     const item = await this.inventory.findOne({
       where: { id: inventoryItemId },
       relations: { hospital: true },
     });
     if (!item) throw new NotFoundException('Inventory item not found');
+    if (facilityScope !== undefined && item.hospital.id !== facilityScope)
+      throw new NotFoundException('Inventory item not found in your facility');
     const facilities = await this.hospitals.find({
       where: { status: 'ACTIVE' as any },
     });

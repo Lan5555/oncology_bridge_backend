@@ -306,7 +306,7 @@ export class ScanLogService {
 
   private isNetworkAdmin(user: User) {
     const role = user.role?.name?.trim().toLowerCase();
-    return role === 'c' || role === 'network admin' || role === 'network_admin';
+    return ['admin', 'superadmin', 'c', 'network admin', 'network_admin', 'network-admin'].includes(role ?? '');
   }
 
   private scanResponse(scan: ScanLog, replay: boolean) {

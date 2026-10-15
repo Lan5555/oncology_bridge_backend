@@ -28,6 +28,21 @@ export class AuditLog {
   @Column({ type: 'uuid', nullable: true, unique: true })
   event_key!: string | null;
 
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  object_type!: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  object_id!: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  request_id!: string | null;
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  before_status!: string | null;
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  after_status!: string | null;
+
   @CreateDateColumn()
   created_at!: Date;
 }

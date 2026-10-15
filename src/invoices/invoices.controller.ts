@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../guards/auth.guard';
+import { NetworkAdminGuard } from '../guards/network-admin.guard';
 import { Invoice } from './entities/invoice.entity';
 import { InvoicesService } from './invoices.service';
 
@@ -16,7 +17,7 @@ export class InvoicesController {
   ) {
     return this.service.findPublic(reference);
   }
-  @Get('api/settlements/summary') @UseGuards(AuthGuard) summary() {
+  @Get('api/settlements/summary') @UseGuards(AuthGuard, NetworkAdminGuard) summary() {
     return this.service.summary();
   }
 }

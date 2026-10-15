@@ -55,6 +55,21 @@ export class User {
   @Column({ nullable: true })
   device_id!: string;
 
+  @Column({ type: 'varchar', length: 24, nullable: true, unique: true })
+  license_number!: string | null;
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  license_registry!: string | null;
+
+  @Column({ type: 'varchar', length: 24, default: 'MANUAL_REVIEW' })
+  verification_status!: string;
+
+  @Column({ type: 'varchar', length: 24, default: 'UNAVAILABLE' })
+  registry_result!: string;
+
+  @Column({ type: 'varchar', length: 24, nullable: true })
+  account_type!: string | null;
+
   @Column({ nullable: true })
   allowed_ip!: string;
 

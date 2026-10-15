@@ -34,6 +34,7 @@ import { StorageUnitsModule } from './storage_units/storage-units.module';
 import { ColdChainEventsModule } from './cold_chain_events/cold-chain-events.module';
 import { FacilityDevicesModule } from './facility_devices/facility-devices.module';
 import { IotDevicesModule } from './iot_devices/iot-devices.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -103,6 +104,7 @@ import { IotDevicesModule } from './iot_devices/iot-devices.module';
     ColdChainEventsModule,
     FacilityDevicesModule,
     IotDevicesModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],

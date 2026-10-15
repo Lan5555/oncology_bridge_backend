@@ -7,6 +7,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Prescription } from './entities/prescription.entity';
 import { OrderEvent } from './entities/order-event.entity';
+import { User } from '../users/entities/user.entity';
 
 @Injectable()
 export class PrescriptionsService {
@@ -15,8 +16,18 @@ export class PrescriptionsService {
     private readonly prescriptions: Repository<Prescription>,
     @InjectRepository(OrderEvent)
     private readonly events: Repository<OrderEvent>,
+    @InjectRepository(User)
+    private readonly users: Repository<User>,
   ) {}
-  async create(data: Partial<Prescription>) {
+  async create(data: Partial<Prescription>, actorId?: string, facilityScope?: string) {
+    if (facilityScope !== undefined) {
+      const actor = actorId ? await this.users.findOne({ where: { id: actorId }, relations: { hospital: true } }) : null;
+      if (!actor?.active || !facilityScope || actor.hospital?.id !== facilityScope)
+        throw new NotFoundException('Active facility account required');
+      if (actor.account_type !== 'DOCTOR')
+        throw new BadRequestException('A doctor account is required to create prescriptions');
+      data = { ...data, pharmacy_facility_id: facilityScope, prescriber_id: actor.id };
+    }
     if (!data.icd10 || !/^C\d{2}(\.\d{1,2})?$/.test(data.icd10))
       throw new BadRequestException('A valid ICD-10 cancer code is required');
     if (
@@ -48,8 +59,9 @@ export class PrescriptionsService {
     );
     return row;
   }
-  async findAll(tab?: string) {
+  async findAll(tab?: string, facilityScope?: string) {
     const rows = await this.prescriptions.find({
+      where: facilityScope !== undefined ? { pharmacy_facility_id: facilityScope } : {},
       order: { created_at: 'DESC' },
     });
     const filtered =
@@ -77,20 +89,22 @@ export class PrescriptionsService {
       },
     };
   }
-  async update(id: string, data: Partial<Prescription>) {
-    const row = await this.prescriptions.findOneBy({ id });
+  async update(id: string, data: Partial<Prescription>, facilityScope?: string) {
+    const row = await this.prescriptions.findOne({ where: { id, ...(facilityScope !== undefined ? { pharmacy_facility_id: facilityScope } : {}) } });
     if (!row) throw new NotFoundException('Prescription not found');
     const {
       id: _ignored,
       created_at: _created,
       updated_at: _updated,
+      pharmacy_facility_id: _facility,
+      prescriber_id: _prescriber,
       ...changes
     } = data;
     Object.assign(row, changes);
     return this.prescriptions.save(row);
   }
-  async eventsFor(id: string) {
-    if (!(await this.prescriptions.exists({ where: { id } })))
+  async eventsFor(id: string, facilityScope?: string) {
+    if (!(await this.prescriptions.exists({ where: { id, ...(facilityScope !== undefined ? { pharmacy_facility_id: facilityScope } : {}) } })))
       throw new NotFoundException('Prescription not found');
     return this.events.find({ where: { order_id: id }, order: { at: 'ASC' } });
   }

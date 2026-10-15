@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { Hospital } from '../hospital/entities/hospital.entity';
 import { Inventory } from '../inventory/entities/inventory.entity';
 import { ScanLog } from '../scan_log/entities/scan_log.entity';
@@ -22,7 +22,7 @@ export class DashboardService {
   ) {}
   async summary() {
     const [facilities, items, scans, transfers] = await Promise.all([
-      this.hospitals.find(),
+      this.hospitals.find({ where: { deleted_at: IsNull() } }),
       this.inventory.find({ relations: { medicine: true } }),
       this.scans.count(),
       this.transfers.find(),

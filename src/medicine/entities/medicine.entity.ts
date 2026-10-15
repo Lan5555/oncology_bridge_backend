@@ -4,6 +4,7 @@ import {
   Column,
   OneToMany,
   CreateDateColumn,
+  DeleteDateColumn,
 } from 'typeorm';
 import { Inventory } from '../../inventory/entities/inventory.entity';
 @Entity('medicines')
@@ -34,6 +35,9 @@ export class Medicine {
 
   @CreateDateColumn()
   created_at!: Date;
+
+  @DeleteDateColumn({ type: 'timestamptz', nullable: true })
+  deleted_at!: Date | null;
 
   @OneToMany(() => Inventory, (inventory) => inventory.medicine)
   inventory!: Inventory[];

@@ -35,21 +35,28 @@ Example request helper:
 
 | Method   | Route                                     | Auth   | Payload / notes                                                                                                                                                                                                                                |
 | -------- | ----------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST`   | `/hospital/api/register-facility`         | Public | `{ account_type, license: { number, registry, verification_status, registry_result }, facility: {...}, admin: {...} }`. Facility and admin shapes follow the existing create DTOs. Registry check is unavailable without MDCN/PCN credentials. |
+| `POST`   | `/hospital/api/register-facility`         | Public | Creates a pending facility, inactive initial admin, verification application, and audit rows atomically. The response is `{data:{facility,admin}}` and does not issue a token. Client verification fields are ignored; registry is currently unavailable, so applications enter `MANUAL_REVIEW`. |
 | `POST`   | `/api/verify-license`                     | Public | `{ "licenseNumber": "...", "registry": "MDCN", "lastName": "..." }`. Currently returns the manual-review/unavailable result.                                                                                                                   |
-| `GET`    | `/api/facilities?status=&q=&page=&limit=` | Bearer | Facility listing and counts.                                                                                                                                                                                                                   |
-| `GET`    | `/api/facilities/:id`                     | Bearer | Facility detail.                                                                                                                                                                                                                               |
-| `PATCH`  | `/api/facilities/:id`                     | Bearer | Update facility fields accepted by `UpdateHospitalDto`.                                                                                                                                                                                        |
-| `DELETE` | `/api/facilities/:id`                     | Bearer | Facility removal route.                                                                                                                                                                                                                        |
-| `GET`    | `/api/network`                            | Bearer | Facility network view.                                                                                                                                                                                                                         |
+| `POST`   | `/api/facility-membership-requests/:requestId/license-check` | Facility Admin | `{ "result": "MATCH"|"NO_MATCH"|"UNAVAILABLE"|"INCONCLUSIVE", "evidence": "..." }`. Records immutable, facility-scoped evidence and an audit event. Reviewer and facility are derived from the authenticated token. This evidence-only action does not change the authoritative licence status or activate the account. |
+| `GET`    | `/api/facilities?status=&q=&page=&limit=` | Network Admin (Role C) | Facility listing, counts, device summary, IP whitelist, and last activity.                                                                                                                                                                     |
+| `GET`    | `/api/facilities/:id`                     | Network Admin (Role C) | Facility detail.                                                                                                                                                                                                                               |
+| `PATCH`  | `/api/facilities/:id`                     | Network Admin (Role C) | Update facility fields, status, `ip_whitelist`, and admin `details`; activation requires an active verified user.                                                                                                                                                                                        |
+| `DELETE` | `/api/facilities/:id`                     | Network Admin (Role C) | Audited soft delete.                                                                                                                                                                                                                           |
+| `GET`    | `/api/network`                            | Network Admin (Role C) | Facility network view.                                                                                                                                                                                                                         |
 
 Legacy facility aliases are also available under `/hospital/api/find-all-facilities`, `/hospital/api/find-one-facility/:id`, `/hospital/api/update-one-facility/:id`, and `/hospital/api/delete-one-facility/:id`.
+
+Admin review is available at `GET /admin/api/verifications?status=ALL&page=1&limit=50&q=`, `POST /admin/api/verifications/:id/recheck`, and `POST /admin/api/verifications/:id/approve|reject`. Decisions derive the reviewer from the token and atomically update application, user, facility, notification, and audit state. Recheck currently records `UNAVAILABLE` and keeps manual review.
+
+Integration administration routes require `ADMIN` or `SUPERADMIN` with their matching backend permission: `GET /admin/api/integrations/health` (`integration.read`), `GET|PUT /admin/api/integrations/:integrationKey/configuration` and `POST .../:integrationKey/test` (`integration.manage`), and `POST .../:integrationKey/sync` (`integration.sync`). Configuration schemas are server-owned; secret values are held in HashiCorp Vault KV v2 (`VAULT_ADDR`, `VAULT_TOKEN`, optional `INTEGRATION_VAULT_MOUNT`, default `secret`). Non-secret configuration and sync job metadata are stored in the database. Test and sync responses and audit entries redact credentials.
+
+Medicine catalog mutation is available to active, verified pharmacist and pharmacy-store accounts with `medicine.update` / `medicine.delete`: `PATCH /api/medicines/:id` accepts only `generic_name`, `brand`, `strength`, and a valid GTIN-14; `DELETE /api/medicines/:id` soft-deletes and audits the catalog record, preserving existing inventory references.
 
 ### Dashboard and reports
 
 | Method | Route                    | Auth   | Payload / notes                                                                                                                                                             |
 | ------ | ------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/api/dashboard/summary` | Bearer | Computed network, inventory, expiry, and transfer totals. Some UI metrics return `null` until their source integration/data exists.                                         |
+| `GET`  | `/api/dashboard/summary` | Network Admin (Role C) | Computed network, inventory, expiry, and transfer totals. Some UI metrics return `null` until their source integration/data exists.                                         |
 | `GET`  | `/api/dashboard/charts`  | Bearer | Chart series derived from scans, stock, and transfers.                                                                                                                      |
 | `GET`  | `/api/public/stats`      | Public | Aggregated public network figures.                                                                                                                                          |
 | `POST` | `/api/reports/export`    | Bearer | `{ "type": "CSV", "from": "2026-01-01", "to": "2026-12-31" }`. CSV is returned in JSON as `data.csv`; PDF/XLSX return a queued demo job because workers are not configured. |
@@ -131,7 +138,7 @@ Recent scans are facility-scoped for ordinary users; Network Admin can see netwo
 | `GET`   | `/api/prescriptions/:id/events` | Bearer   | Order timeline events.                                                                                                                                                                                                                                                   |
 | `POST`  | `/api/invoices`                 | Bearer   | Creates invoice record. Current endpoint expects invoice fields (`order_id`, `pharmacy_facility_id`, `total_naira`; optional `reference`).                                                                                                                               |
 | `GET`   | `/api/invoices/:reference`      | Public   | PII-minimized invoice lookup with item details and `isDemo: true`.                                                                                                                                                                                                       |
-| `GET`   | `/api/settlements/summary`      | Bearer   | Aggregated settlement values.                                                                                                                                                                                                                                            |
+| `GET`   | `/api/settlements/summary`      | Network Admin (Role C)   | Aggregated settlement values.                                                                                                                                                                                                                                            |
 
 Paystack checkout, payment verification, settlement creation from completed payments, and insurer authorization webhooks are not implemented yet. The frontend should present payment as unavailable/demo until those integrations are added.
 
@@ -169,17 +176,15 @@ Apply [`database/cold-chain-hardening.sql`](database/cold-chain-hardening.sql) a
 
 | Method  | Route                                                 | Auth                 | Payload / notes                                                                                                 |
 | ------- | ----------------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `GET`   | `/api/users?take=50&skip=0`                           | Bearer               | Paginated user list.                                                                                            |
+| `GET`   | `/api/users?take=50&skip=0&roleId=&facilityId=`       | Network Admin (Role C) | Paginated user list.                                                                                            |
 | `GET`   | `/api/users/:id`                                      | Bearer               | User detail.                                                                                                    |
 | `PATCH` | `/users/api/update-one-user/:id`                      | Existing route       | Update a user.                                                                                                  |
-| `GET`   | `/api/roles`                                          | Existing role routes | Role listing. Create/update/delete at `/api/roles` and `/api/roles/:id`.                                        |
-| `POST`  | `/api/verification-applications`                      | Public               | Create an application using entity fields: `user_id`, `registry`, `license_number`, optional `registry_result`. |
-| `GET`   | `/api/verification-applications?status=MANUAL_REVIEW` | Bearer               | Admin review list.                                                                                              |
-| `POST`  | `/api/verification-applications/:id/decision`         | Bearer               | `{ "status": "VERIFIED", "reviewer_id": "uuid", "reason": "..." }`.                                             |
+| `GET`   | `/api/roles`                                          | Network Admin (Role C) | Role listing includes permissions and user counts. Create/update/delete at `/api/roles` and `/api/roles/:id`; `GET/PUT /api/roles/:id/permissions` reads or sets permission keys. |
+| `GET`   | `/api/verification-applications?status=MANUAL_REVIEW` | Network Admin (Role C) | Legacy review listing. Use `/admin/api/verifications` for the paginated applicant/facility queue and decisions. |
 | `POST`  | `/api/research/inquiries`                             | Public               | `{ "name": "...", "organisation": "...", "email": "...", "message": "..." }`.                                   |
 | `GET`   | `/api/research/stats`                                 | Public               | Aggregated inquiry count.                                                                                       |
 
-External email delivery and CAPTCHA/rate limiting for public inquiry forms are not configured. Verification endpoints persist review applications but do not update the existing user schema's verification status.
+External email delivery and CAPTCHA/rate limiting for public inquiry forms are not configured. Registration verification decisions update the applicant and facility, and persist an in-app notification transactionally. Registry lookups and outbound email delivery are not configured.
 
 ## Frontend mapping
 
@@ -195,3 +200,7 @@ External email delivery and CAPTCHA/rate limiting for public inquiry forms are n
 ## Scanner database change
 
 The API uses `synchronize: false`. Apply [database/gs1-scanner.sql](database/gs1-scanner.sql) once to add persisted idempotency, facility scope, action, and audit metadata to the existing `scan_logs` table before using the scanner routes.
+
+## Facility registration and admin portal database change
+
+After applying the base schema (including `verification_applications`, `audit_logs`, and `role_permissions`), apply [database/facility-registration.sql](database/facility-registration.sql) to add registration verification fields, facility soft-delete/IP metadata, review timestamps, structured audit metadata, the least-privilege `FACILITY_ADMIN` role, and initial permission grants for deployed `ADMIN`/`SUPERADMIN` roles. `synchronize` is disabled, so the migration is required before deploying these routes.

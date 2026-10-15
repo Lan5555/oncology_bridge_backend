@@ -5,6 +5,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import {
   ForbiddenException,
+  BadRequestException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -22,8 +23,8 @@ export class AuditLogService {
     @InjectRepository(AuditLog) private readonly audits: Repository<AuditLog>,
     @InjectRepository(User) private readonly users: Repository<User>,
   ) {}
-  async create(dto: CreateAuditLogDto) {
-    const actor = await this.users.findOneBy({ id: dto.userId });
+  async create(dto: CreateAuditLogDto, actorId: string) {
+    const actor = await this.users.findOneBy({ id: actorId });
     if (!actor) throw new NotFoundException('Audit actor not found');
     const log = this.audits.create({
       user: actor,
@@ -37,7 +38,7 @@ export class AuditLogService {
     );
   }
   async findAll(
-    options: { type?: string; page?: number; limit?: number } = {},
+    options: { type?: string; page?: number; limit?: number; actor?: string; from?: string; to?: string } = {},
   ) {
     const page = Math.max(1, Number(options.page) || 1),
       limit = Math.min(200, Math.max(1, Number(options.limit) || 50));
@@ -46,6 +47,17 @@ export class AuditLogService {
       .leftJoinAndSelect('a.user', 'user')
       .orderBy('a.created_at', 'DESC');
     if (options.type) qb.andWhere('a.action = :type', { type: options.type });
+    if (options.actor) qb.andWhere('user.id = :actor', { actor: options.actor });
+    if (options.from) {
+      const from = new Date(options.from);
+      if (Number.isNaN(from.getTime())) throw new BadRequestException('Invalid from date');
+      qb.andWhere('a.created_at >= :from', { from });
+    }
+    if (options.to) {
+      const to = new Date(options.to);
+      if (Number.isNaN(to.getTime())) throw new BadRequestException('Invalid to date');
+      qb.andWhere('a.created_at <= :to', { to });
+    }
     const [rows, total] = await qb
       .skip((page - 1) * limit)
       .take(limit)
@@ -73,8 +85,8 @@ export class AuditLogService {
     if (!row) throw new NotFoundException('Audit record not found');
     return ResponseHelper.Success('Audit record retrieved', row);
   }
-  async exportCsv() {
-    const result: any = await this.findAll({ limit: 200 });
+  async exportCsv(actorId: string, options: { type?: string; actor?: string; from?: string; to?: string } = {}) {
+    const result: any = await this.findAll({ ...options, limit: 200 });
     const rows = result.data?.items ?? [];
     const q = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const csv = [
@@ -85,6 +97,12 @@ export class AuditLogService {
           .join(','),
       ),
     ].join('\n');
+    const actor = await this.users.findOneBy({ id: actorId });
+    if (actor) await this.audits.save(this.audits.create({
+      user: actor, action: 'AUDIT_EXPORTED',
+      description: `Audit CSV exported${options.type ? ` with action filter ${options.type}` : ''}`,
+      ip_address: 'admin-api', event_key: null,
+    }));
     return ResponseHelper.Success('Audit export generated', { csv });
   }
   verifyChain() {
