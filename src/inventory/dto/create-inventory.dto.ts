@@ -1,6 +1,7 @@
 import {
   IsDateString,
   IsInt,
+  IsIn,
   IsOptional,
   IsString,
   IsUUID,
@@ -8,6 +9,10 @@ import {
 } from 'class-validator';
 
 export class CreateInventoryDto {
+  @IsOptional()
+  @IsIn(['vial', 'pack', 'bottle', 'box'])
+  sellingUnit?: string;
+
   @IsOptional()
   @IsUUID()
   hospitalId?: string;

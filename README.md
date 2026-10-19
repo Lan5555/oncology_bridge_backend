@@ -1,5 +1,9 @@
 The frontend origin must be included in the comma-separated `CORS_ORIGIN` list in production. The API uses `synchronize: false`:
 
+Admin operational list routes, read grants, pagination, privacy rules and the required migration are documented in [database/ADMIN-OPERATIONAL-READS.md](database/ADMIN-OPERATIONAL-READS.md).
+
+Medicine marketplace deployment, Cloudinary configuration, Paystack setup, and validation are documented in [database/MARKETPLACE.md](database/MARKETPLACE.md). Apply its migration before starting this version of the API.
+
 ## Request conventions
 
 - Send and receive JSON. IDs are UUIDs except role IDs, which are integers.
@@ -50,7 +54,9 @@ Admin review is available at `GET /admin/api/verifications?status=ALL&page=1&lim
 
 Integration administration routes require `ADMIN` or `SUPERADMIN` with their matching backend permission: `GET /admin/api/integrations/health` (`integration.read`), `GET|PUT /admin/api/integrations/:integrationKey/configuration` and `POST .../:integrationKey/test` (`integration.manage`), and `POST .../:integrationKey/sync` (`integration.sync`). Configuration schemas are server-owned; secret values are held in HashiCorp Vault KV v2 (`VAULT_ADDR`, `VAULT_TOKEN`, optional `INTEGRATION_VAULT_MOUNT`, default `secret`). Non-secret configuration and sync job metadata are stored in the database. Test and sync responses and audit entries redact credentials.
 
-Medicine catalog mutation is available to active, verified pharmacist and pharmacy-store accounts with `medicine.update` / `medicine.delete`: `PATCH /api/medicines/:id` accepts only `generic_name`, `brand`, `strength`, and a valid GTIN-14; `DELETE /api/medicines/:id` soft-deletes and audits the catalog record, preserving existing inventory references.
+Inventory intake and mutations require active verified facility membership and explicit `inventory.manage`, supplied by a role or an individual facility-bound grant. Network administrators with `admin.access` and `user.update` can assign individual grants using `PUT /api/users/:id/stock-access` with `{ "enabled": true }`; clients must refresh the affected session to reload navigation. Team-management permission does not imply stock permission. See [stock access setup](database/MARKETPLACE.md#stock-intake-and-staff-authorization).
+
+Catalogue mutations accept `inventory.manage` or the corresponding `medicine.create`, `medicine.update` or `medicine.delete` grant. Facility staff may mutate only facility-owned records; network administrators with the corresponding permission manage shared records. `PATCH /api/medicines/:id` accepts only `generic_name`, `brand`, `strength`, and a valid GTIN-14; deletion is audited and preserves inventory references. Apply `database/inventory-access.sql` before starting the API.
 
 ### Dashboard and reports
 

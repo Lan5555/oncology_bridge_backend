@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Invoice } from './entities/invoice.entity';
 import { Settlement } from './entities/settlement.entity';
+import { MarketplaceService } from '../marketplace/marketplace.service';
 
 @Injectable()
 export class InvoicesService {
@@ -10,6 +11,7 @@ export class InvoicesService {
     @InjectRepository(Invoice) private readonly invoices: Repository<Invoice>,
     @InjectRepository(Settlement)
     private readonly settlements: Repository<Settlement>,
+    private readonly marketplace: MarketplaceService,
   ) {}
   async create(data: Partial<Invoice>) {
     const row = this.invoices.create({
@@ -20,7 +22,12 @@ export class InvoicesService {
     });
     return this.invoices.save(row);
   }
-  async findPublic(reference: string) {
+  async findPublic(reference: string, actorId?: string) {
+    const marketplaceInvoice = await this.marketplace.invoice(
+      reference,
+      actorId,
+    );
+    if (marketplaceInvoice) return marketplaceInvoice;
     const row = await this.invoices.findOne({
       where: { reference },
       relations: { items: true },

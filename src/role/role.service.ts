@@ -11,11 +11,13 @@ import { User } from '../users/entities/user.entity';
 import { DataSource } from 'typeorm';
 
 const AVAILABLE_PERMISSIONS = [
+  'medicine.read', 'inventory.read', 'marketplace.read', 'prescription.read', 'invoice.read',
+  'transfer.read', 'scan.read', 'coldchain.read', 'network.read', 'research.read',
   'facility.read', 'facility.update', 'facility.delete', 'user.read', 'user.update',
   'role.read', 'role.update', 'verification.read', 'verification.decide',
   'audit.read', 'audit.export', 'settlement.read', 'integration.read',
   'dashboard.read', 'admin.access', 'integration.manage', 'integration.sync',
-  'medicine.update', 'medicine.delete',
+  'medicine.create', 'medicine.update', 'medicine.delete', 'inventory.manage', 'marketplace.list',
   'facility.users.manage',
 ];
 

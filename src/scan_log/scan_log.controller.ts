@@ -1,3 +1,6 @@
+import { OperationalReadGuard } from '../guards/operational-read.guard';
+import { OperationalReadsService } from '../operations/operational-reads.service';
+import { OperationalQueryDto } from '../operations/operational-query.dto';
 import {
   Controller,
   Get,
@@ -32,13 +35,14 @@ interface ScannerRequest extends Request {
 }
 
 @Controller(['scan-log', 'api/scans'])
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, OperationalReadGuard)
 export class ScanLogController {
   private readonly decodeAttempts = new Map<string, number[]>();
 
   constructor(
     private readonly scanLogService: ScanLogService,
     private readonly decoder: Gs1ImageDecoderService,
+    private readonly reads: OperationalReadsService,
   ) {}
 
   @Post('decode')
@@ -146,9 +150,11 @@ export class ScanLogController {
     return this.scanLogService.monthly({ id: request.user!.id });
   }
 
-  @Get()
-  findAll(@Req() request: ScannerRequest) {
-    return this.scanLogService.findAll({ id: request.user!.id });
+  @Get() findAll(
+    @Req() req: ScannerRequest,
+    @Query() query: OperationalQueryDto,
+  ) {
+    return this.reads.list('scans', req.user?.id, query);
   }
 
   @Get(':id')

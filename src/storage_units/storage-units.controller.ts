@@ -1,3 +1,6 @@
+import { OperationalReadGuard } from '../guards/operational-read.guard';
+import { OperationalReadsService } from '../operations/operational-reads.service';
+import { OperationalQueryDto } from '../operations/operational-query.dto';
 import {
   Body,
   Controller,
@@ -5,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -19,12 +23,15 @@ interface UserRequest extends Request {
 }
 
 @Controller('api/storage-units')
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, OperationalReadGuard)
 export class StorageUnitsController {
-  constructor(private readonly service: StorageUnitsService) {}
+  constructor(
+    private readonly service: StorageUnitsService,
+    private readonly reads: OperationalReadsService,
+  ) {}
 
-  @Get() all(@Req() request: UserRequest) {
-    return this.service.all(String(request.user!.id));
+  @Get() all(@Req() req: UserRequest, @Query() query: OperationalQueryDto) {
+    return this.reads.list('storage', req.user?.id, query);
   }
 
   @Post() create(

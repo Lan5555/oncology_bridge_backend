@@ -35,6 +35,8 @@ import { ColdChainEventsModule } from './cold_chain_events/cold-chain-events.mod
 import { FacilityDevicesModule } from './facility_devices/facility-devices.module';
 import { IotDevicesModule } from './iot_devices/iot-devices.module';
 import { AdminModule } from './admin/admin.module';
+import { MarketplaceModule } from './marketplace/marketplace.module';
+import { OperationalReadsModule } from './operations/operational-reads.module';
 
 @Module({
   imports: [
@@ -105,6 +107,8 @@ import { AdminModule } from './admin/admin.module';
     FacilityDevicesModule,
     IotDevicesModule,
     AdminModule,
+    MarketplaceModule,
+    OperationalReadsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

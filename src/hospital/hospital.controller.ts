@@ -1,3 +1,6 @@
+import { OperationalReadGuard } from '../guards/operational-read.guard';
+import { OperationalReadsService } from '../operations/operational-reads.service';
+import { OperationalQueryDto } from '../operations/operational-query.dto';
 import {
   Controller,
   Get,
@@ -20,7 +23,14 @@ import { CreateHospitalDto } from './dto/create-hospital.dto';
 import { UpdateHospitalDto } from './dto/update-hospital.dto';
 import { FacilityLicenseCheckDto } from './dto/facility-license-check.dto';
 import { CreateUserDto } from '../users/dto/create-user.dto';
-import { IsIn, IsOptional, IsString, IsUUID, MaxLength, ValidateNested } from 'class-validator';
+import {
+  IsIn,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  ValidateNested,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 type AdminRequest = Request & { user: { id: string } };
@@ -49,7 +59,8 @@ class MembershipRejectDto {
 export class LicenseRegistrationDto {
   @IsString() number!: string;
   @IsIn(['MDCN', 'PCN', 'PCN_PREMISES']) registry!: string;
-  @IsOptional() @IsString()
+  @IsOptional()
+  @IsString()
   verification_status!: string;
   @IsOptional() @IsString() registry_result!: string;
 }
@@ -81,7 +92,11 @@ export class HospitalController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.hospitalService.publicFacilities({ q, page: Number(page), limit: Number(limit) });
+    return this.hospitalService.publicFacilities({
+      q,
+      page: Number(page),
+      limit: Number(limit),
+    });
   }
 
   @Post('/api/register-user-to-facility')
@@ -91,7 +106,10 @@ export class HospitalController {
 
   @Get('/api/membership-requests')
   @UseGuards(AuthGuard, FacilityTeamGuard)
-  membershipRequests(@Req() req: AdminRequest, @Query('status') status?: string) {
+  membershipRequests(
+    @Req() req: AdminRequest,
+    @Query('status') status?: string,
+  ) {
     return this.hospitalService.membershipRequests(req.user.id, status);
   }
 
@@ -103,7 +121,13 @@ export class HospitalController {
     @Req() req: AdminRequest,
     @Ip() ip: string,
   ) {
-    return this.hospitalService.decideMembership(id, body.status, body.reason, req.user.id, ip);
+    return this.hospitalService.decideMembership(
+      id,
+      body.status,
+      body.reason,
+      req.user.id,
+      ip,
+    );
   }
 
   @Post('/api/register-facility')
@@ -149,7 +173,11 @@ export class HospitalController {
     @Body() updateHospitalDto: UpdateHospitalDto,
     @Req() req: AdminRequest,
   ) {
-    return this.hospitalService.updateOneFacility(id, updateHospitalDto, req.user.id);
+    return this.hospitalService.updateOneFacility(
+      id,
+      updateHospitalDto,
+      req.user.id,
+    );
   }
 
   @Delete('/api/delete-one-facility/:id')
@@ -171,7 +199,13 @@ export class FacilityTeamMembershipController {
 
   @Post(':id/approve')
   approve(@Param('id') id: string, @Req() req: AdminRequest, @Ip() ip: string) {
-    return this.hospitalService.decideMembership(id, 'APPROVED', undefined, req.user.id, ip);
+    return this.hospitalService.decideMembership(
+      id,
+      'APPROVED',
+      undefined,
+      req.user.id,
+      ip,
+    );
   }
 
   @Post(':requestId/license-check')
@@ -182,13 +216,27 @@ export class FacilityTeamMembershipController {
     @Ip() ip: string,
   ) {
     return this.hospitalService.recordMembershipLicenseCheck(
-      requestId, body, req.user.id, ip,
+      requestId,
+      body,
+      req.user.id,
+      ip,
     );
   }
 
   @Post(':id/reject')
-  reject(@Param('id') id: string, @Body() body: MembershipRejectDto, @Req() req: AdminRequest, @Ip() ip: string) {
-    return this.hospitalService.decideMembership(id, 'REJECTED', body.reason, req.user.id, ip);
+  reject(
+    @Param('id') id: string,
+    @Body() body: MembershipRejectDto,
+    @Req() req: AdminRequest,
+    @Ip() ip: string,
+  ) {
+    return this.hospitalService.decideMembership(
+      id,
+      'REJECTED',
+      body.reason,
+      req.user.id,
+      ip,
+    );
   }
 }
 
@@ -225,11 +273,14 @@ export class FacilitiesApiController {
 }
 
 @Controller('api/network')
-@UseGuards(AuthGuard, NetworkAdminGuard)
+@UseGuards(AuthGuard, OperationalReadGuard)
 export class NetworkApiController {
-  constructor(private readonly hospitalService: HospitalService) {}
-  @Get() network() {
-    return this.hospitalService.getNetwork();
+  constructor(private readonly reads: OperationalReadsService) {}
+  @Get() network(
+    @Req() req: Request & { user?: { id: string } },
+    @Query() query: OperationalQueryDto,
+  ) {
+    return this.reads.list('network', req.user?.id, query);
   }
 }
 

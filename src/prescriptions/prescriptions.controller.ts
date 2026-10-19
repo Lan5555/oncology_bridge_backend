@@ -1,3 +1,6 @@
+import { OperationalReadGuard } from '../guards/operational-read.guard';
+import { OperationalReadsService } from '../operations/operational-reads.service';
+import { OperationalQueryDto } from '../operations/operational-query.dto';
 import {
   Body,
   Controller,
@@ -17,16 +20,29 @@ import { PrescriptionsService } from './prescriptions.service';
 type FacilityRequest = Request & { user?: { id: string; facilityId?: string } };
 
 @Controller('api/prescriptions')
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, OperationalReadGuard)
 export class PrescriptionsController {
-  constructor(private readonly service: PrescriptionsService) {}
-  @Post() create(@Body() body: Partial<Prescription>, @Req() req: FacilityRequest) {
+  constructor(
+    private readonly service: PrescriptionsService,
+    private readonly reads: OperationalReadsService,
+  ) {}
+  @Post() create(
+    @Body() body: Partial<Prescription>,
+    @Req() req: FacilityRequest,
+  ) {
     return this.service.create(body, req.user?.id, req.user?.facilityId);
   }
-  @Get() findAll(@Query('tab') tab: string | undefined, @Req() req: FacilityRequest) {
-    return this.service.findAll(tab, req.user?.facilityId);
+  @Get() findAll(
+    @Query() query: OperationalQueryDto,
+    @Req() req: FacilityRequest,
+  ) {
+    return this.reads.list('prescriptions', req.user?.id, query);
   }
-  @Get(':id/events') events(@Param('id') id: string, @Req() req: FacilityRequest) {
+
+  @Get(':id/events') events(
+    @Param('id') id: string,
+    @Req() req: FacilityRequest,
+  ) {
     return this.service.eventsFor(id, req.user?.facilityId);
   }
   @Patch(':id') update(

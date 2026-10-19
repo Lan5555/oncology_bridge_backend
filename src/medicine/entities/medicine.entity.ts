@@ -33,6 +33,12 @@ export class Medicine {
   @Column()
   storage_temperature!: string;
 
+  @Column({ default: true })
+  prescription_required!: boolean;
+
+  @Column({ type: 'uuid', nullable: true })
+  catalog_facility_id!: string | null;
+
   @CreateDateColumn()
   created_at!: Date;
 

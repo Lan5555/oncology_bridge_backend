@@ -136,11 +136,20 @@ export class AuthService {
 
       const oneMonth = 30 * 24 * 60 * 60 * 1000;
       const email = this.encryptionService.decrypt(user.email);
+      const authenticatedUser = await this.usersService.authenticatedUser(
+        user.id,
+      );
 
       const payload = {
         id: user.id,
         email,
         role: user.role?.name,
+        account_type: authenticatedUser.account_type,
+        verification_status: authenticatedUser.verification_status,
+        permissions: authenticatedUser.permissions,
+        allowed_pages: authenticatedUser.allowed_pages,
+        can_manage_facility_users: authenticatedUser.can_manage_facility_users,
+        can_manage_inventory: authenticatedUser.can_manage_inventory,
       };
 
       const accessToken = await this.jwtService.signAsync(payload, {
@@ -186,7 +195,7 @@ export class AuthService {
         token: string;
         refreshToken: string;
       }>('Login successful', {
-        user: await this.usersService.authenticatedUser(user.id),
+        user: authenticatedUser,
         token: accessToken,
         refreshToken,
       });
@@ -214,10 +223,19 @@ export class AuthService {
     });
     if (!session || session.expires_at <= new Date() || !session.user.active)
       throw new UnauthorizedException('Session expired or revoked');
+    const authenticatedUser = await this.usersService.authenticatedUser(
+      session.user.id,
+    );
     const nextPayload = {
       id: session.user.id,
       email: payload.email,
       role: session.user.role?.name,
+      account_type: authenticatedUser.account_type,
+      verification_status: authenticatedUser.verification_status,
+      permissions: authenticatedUser.permissions,
+      allowed_pages: authenticatedUser.allowed_pages,
+      can_manage_facility_users: authenticatedUser.can_manage_facility_users,
+      can_manage_inventory: authenticatedUser.can_manage_inventory,
     };
     const next = await this.jwtService.signAsync(nextPayload, {
       expiresIn: '15m',
@@ -231,7 +249,7 @@ export class AuthService {
     session.expires_at = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     await this.userSession.save(session);
     return ResponseHelper.Success('Session refreshed', {
-      user: await this.usersService.authenticatedUser(session.user.id),
+      user: authenticatedUser,
       token: next,
       refreshToken: nextRefresh,
       expiresIn: 900,

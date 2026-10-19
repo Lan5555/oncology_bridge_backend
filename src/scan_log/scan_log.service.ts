@@ -17,6 +17,7 @@ import { CreateScanLogDto } from './dto/create-scan_log.dto';
 import { ResponseHelper } from '../helpers/response-helper';
 import { UpdateScanLogDto } from './dto/update-scan_log.dto';
 import { normalizeGs1Expiry, validateGtin } from './gs1-parser';
+import { StockAccessService } from '../guards/stock-access.service';
 
 export interface ScanActor {
   id: string;
@@ -34,6 +35,7 @@ export class ScanLogService {
     private readonly hospitals: Repository<Hospital>,
     @InjectRepository(User) private readonly users: Repository<User>,
     @InjectRepository(AuditLog) private readonly audits: Repository<AuditLog>,
+    private readonly stockAccess: StockAccessService,
   ) {}
 
   async create(dto: CreateScanLogDto, actor: ScanActor, ip = 'unknown') {
@@ -63,13 +65,7 @@ export class ScanLogService {
         'Scan quantity must be a positive integer.',
       );
 
-    const user = await this.users.findOne({
-      where: { id: actor.id },
-      relations: { hospital: true, role: true },
-    });
-    if (!user || !user.active)
-      throw new ForbiddenException('Active user account required.');
-    this.assertFacilityAccess(user, dto.facilityId);
+    const user = await this.stockAccess.assertManage(actor.id, dto.facilityId);
 
     const existingRequest = await this.scans.findOne({
       where: { client_uuid: dto.clientUuid },
@@ -123,6 +119,8 @@ export class ScanLogService {
         relations: { hospital: true, medicine: true },
       });
       if (item) {
+        // Increment in SQL so concurrent payment updates cannot be overwritten.
+        await this.inventory.increment({ id: item.id }, 'quantity', quantity);
         item.quantity += quantity;
       } else {
         item = this.inventory.create({
@@ -135,7 +133,7 @@ export class ScanLogService {
           status: 'AVAILABLE',
         });
       }
-      item = await this.inventory.save(item);
+      if (!item.id) item = await this.inventory.save(item);
     }
     if (!item)
       throw new NotFoundException(
@@ -287,26 +285,19 @@ export class ScanLogService {
   }
 
   async assertCanScan(actor: ScanActor, facilityId: string) {
-    const user = await this.users.findOne({
-      where: { id: actor.id },
-      relations: { hospital: true, role: true },
-    });
-    if (!user || !user.active)
-      throw new ForbiddenException('Active user account required.');
-    this.assertFacilityAccess(user, facilityId);
-    if (!(await this.hospitals.exists({ where: { id: facilityId } })))
-      throw new NotFoundException('Facility not found.');
-  }
-
-  private assertFacilityAccess(user: User, facilityId: string) {
-    if (this.isNetworkAdmin(user)) return;
-    if (!user.hospital?.id || user.hospital.id !== facilityId)
-      throw new ForbiddenException('You cannot scan for this facility.');
+    await this.stockAccess.assertManage(actor.id, facilityId);
   }
 
   private isNetworkAdmin(user: User) {
     const role = user.role?.name?.trim().toLowerCase();
-    return ['admin', 'superadmin', 'c', 'network admin', 'network_admin', 'network-admin'].includes(role ?? '');
+    return [
+      'admin',
+      'superadmin',
+      'c',
+      'network admin',
+      'network_admin',
+      'network-admin',
+    ].includes(role ?? '');
   }
 
   private scanResponse(scan: ScanLog, replay: boolean) {

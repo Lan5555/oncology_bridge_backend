@@ -2,6 +2,8 @@ import {
   Controller,
   Get,
   Post,
+  Put,
+  ParseUUIDPipe,
   Body,
   Patch,
   Param,
@@ -16,14 +18,34 @@ import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { AuthGuard } from '../guards/auth.guard';
-import { FacilityTeamGuard, UserManagementGuard } from '../guards/user-management.guard';
+import {
+  FacilityTeamGuard,
+  UserManagementGuard,
+} from '../guards/user-management.guard';
 import { FacilityInviteDto } from './dto/facility-invite.dto';
+import { StockAccessDto } from './dto/stock-access.dto';
+import { StockAccessService } from '../guards/stock-access.service';
+import { NetworkAdminGuard } from '../guards/network-admin.guard';
 
 type AdminRequest = Request & { user: { id: string; facilityId?: string } };
 
 @Controller(['users', 'api/users'])
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly stockAccess: StockAccessService,
+  ) {}
+
+  @Put(':id/stock-access')
+  @UseGuards(AuthGuard, NetworkAdminGuard)
+  stockGrant(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: StockAccessDto,
+    @Req() req: AdminRequest,
+    @Ip() ip: string,
+  ) {
+    return this.stockAccess.setGrant(id, body.enabled, req.user.id, ip);
+  }
 
   @Get()
   @UseGuards(AuthGuard, UserManagementGuard)
@@ -51,7 +73,11 @@ export class UsersController {
 
   @Post()
   @UseGuards(AuthGuard, FacilityTeamGuard)
-  invite(@Body() body: FacilityInviteDto, @Req() req: AdminRequest, @Ip() ip: string) {
+  invite(
+    @Body() body: FacilityInviteDto,
+    @Req() req: AdminRequest,
+    @Ip() ip: string,
+  ) {
     return this.usersService.inviteFacilityUser(body, req.user.id, ip);
   }
 
@@ -62,8 +88,15 @@ export class UsersController {
 
   @Get('/api/find-all-users')
   @UseGuards(AuthGuard, UserManagementGuard)
-  findAll(@Query('take') take: number, @Query('skip') skip: number, @Req() req: AdminRequest) {
-    return this.usersService.findAllForActor(req.user.id, { take: +take, skip: +skip });
+  findAll(
+    @Query('take') take: number,
+    @Query('skip') skip: number,
+    @Req() req: AdminRequest,
+  ) {
+    return this.usersService.findAllForActor(req.user.id, {
+      take: +take,
+      skip: +skip,
+    });
   }
 
   @Get('/api/find-one-user/:id')
@@ -85,7 +118,11 @@ export class UsersController {
   @Delete(':id')
   @UseGuards(AuthGuard, UserManagementGuard)
   softDelete(@Param('id') id: string, @Req() req: AdminRequest) {
-    return this.usersService.updateForActor(id, { is_active: false }, req.user.id);
+    return this.usersService.updateForActor(
+      id,
+      { is_active: false },
+      req.user.id,
+    );
   }
 
   @Delete('/api/delete-one-user/:id')

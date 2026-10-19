@@ -22,6 +22,7 @@ async function bootstrap() {
     allowedHeaders: [
       'Content-Type',
       'Authorization',
+      'Idempotency-Key',
       'Last-Event-ID',
       'x-paystack-signature',
     ],

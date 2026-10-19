@@ -23,6 +23,7 @@ import { RolePermission } from '../role/entities/role-permission.entity';
 import { FacilityInviteDto } from './dto/facility-invite.dto';
 import { VerificationApplication } from '../verification_applications/entities/verification-application.entity';
 import { FacilityMembershipRequest } from '../hospital/entities/facility-membership-request.entity';
+import { StockAccessService } from '../guards/stock-access.service';
 
 @Injectable()
 export class UsersService {
@@ -33,19 +34,18 @@ export class UsersService {
     @InjectRepository(Role)
     private readonly roleRepository: Repository<Role>,
     private readonly dataSource: DataSource,
+    private readonly stockAccess: StockAccessService,
   ) {}
 
   private async toAdminUser(user: User) {
     const facility = user.hospital;
     const application = user.id
       ? await this.dataSource.getRepository(VerificationApplication).findOne({
-          where: { user_id: user.id }, order: { submitted_at: 'DESC' },
+          where: { user_id: user.id },
+          order: { submitted_at: 'DESC', id: 'DESC' },
         })
       : null;
-    const grants = user.role
-      ? await this.dataSource.getRepository(RolePermission).findBy({ role_id: user.role.id })
-      : [];
-    const assignedPermissions = grants.map((grant) => grant.permission);
+    const assignedPermissions = await this.stockAccess.permissions(user);
     const canManageFacilityUsers = Boolean(
       user.active &&
       user.role?.name === 'FACILITY_ADMIN' &&
@@ -60,18 +60,43 @@ export class UsersService {
     // these values only describe the user's workspace and never confer network
     // administrator access.
     const professionalPages: Record<string, string[]> = {
-      DOCTOR: ['pg-prescriptions', 'pg-medicines', 'pg-scanning', 'pg-transfers', 'pg-inventory', 'pg-cold-chain', 'pg-expiry'],
-      PHARMACIST: ['pg-medicines', 'pg-scanning', 'pg-transfers', 'pg-inventory', 'pg-cold-chain', 'pg-expiry'],
-      PHARMACY_STORE: ['pg-medicines', 'pg-scanning', 'pg-transfers', 'pg-inventory', 'pg-cold-chain', 'pg-expiry'],
+      DOCTOR: [
+        'pg-prescriptions',
+        'pg-medicines',
+        'pg-transfers',
+        'pg-cold-chain',
+        'pg-expiry',
+      ],
+      PHARMACIST: [
+        'pg-medicines',
+        'pg-transfers',
+        'pg-cold-chain',
+        'pg-expiry',
+      ],
+      PHARMACY_STORE: [
+        'pg-medicines',
+        'pg-transfers',
+        'pg-cold-chain',
+        'pg-expiry',
+      ],
     };
-    const verifiedProfessional = user.verification_status === 'VERIFIED' &&
-      (!application || application.status === 'VERIFIED');
-    const pages = new Set<string>();
+    const verifiedProfessional =
+      user.active &&
+      user.verification_status === 'VERIFIED' &&
+      (!application || application.status === 'VERIFIED') &&
+      facility?.status === 'ACTIVE' &&
+      !facility.deleted_at;
+    const canManageInventory =
+      verifiedProfessional && assignedPermissions.includes('inventory.manage');
+    const pages = new Set<string>(['pg-dashboard', 'pg-settings']);
     if (verifiedProfessional && user.account_type) {
-      for (const page of professionalPages[user.account_type] ?? []) pages.add(page);
-      pages.add('pg-dashboard');
-      pages.add('pg-settings');
+      for (const page of professionalPages[user.account_type] ?? [])
+        pages.add(page);
+      if (professionalPages[user.account_type]) pages.add('pg-marketplace');
     }
+    if (canManageInventory)
+      for (const page of ['pg-inventory', 'pg-scan', 'pg-medicines'])
+        pages.add(page);
     if (canManageFacilityUsers) pages.add('pg-users');
     return {
       id: user.id,
@@ -89,7 +114,11 @@ export class UsersService {
       created_at: user.created_at ?? null,
       updated_at: user.updated_at ?? null,
       role: user.role
-        ? { id: user.role.id, name: user.role.name, description: user.role.description ?? null }
+        ? {
+            id: user.role.id,
+            name: user.role.name,
+            description: user.role.description ?? null,
+          }
         : null,
       facility: facility
         ? {
@@ -98,27 +127,35 @@ export class UsersService {
             hospital_code: facility.hospital_code,
             facility_type: facility.facility_type,
             status: facility.status,
-            email: facility.email ? this.encryptionService.decrypt(facility.email) : null,
-            phone: facility.phone ? this.encryptionService.decrypt(facility.phone) : null,
+            email: facility.email
+              ? this.encryptionService.decrypt(facility.email)
+              : null,
+            phone: facility.phone
+              ? this.encryptionService.decrypt(facility.phone)
+              : null,
             address: facility.address,
             city: facility.city,
             state: facility.state,
           }
         : null,
       facility_id: facility?.id ?? null,
-      permissions: canManageFacilityUsers
-        ? ['facility.users.manage']
-        : ['ADMIN', 'SUPERADMIN'].includes(user.role?.name?.toUpperCase() ?? '')
-          ? assignedPermissions
+      permissions: this.stockAccess.isNetworkAdmin(user)
+        ? assignedPermissions
+        : verifiedProfessional
+          ? assignedPermissions.filter(
+              (p) => p !== 'facility.users.manage' || canManageFacilityUsers,
+            )
           : [],
       can_manage_facility_users: canManageFacilityUsers,
+      can_manage_inventory: Boolean(canManageInventory),
       allowed_pages: [...pages],
     };
   }
 
   async authenticatedUser(id: string) {
     const user = await this.userRepository.findOne({
-      where: { id }, relations: { role: true, hospital: true },
+      where: { id },
+      relations: { role: true, hospital: true },
     });
     if (!user) throw new NotFoundException('User not found');
     return this.toAdminUser(user);
@@ -242,7 +279,9 @@ export class UsersService {
         skip: skipBounded,
       });
       if (!users) return ResponseHelper.Error<null>('No users found', null);
-      const usersData = await Promise.all(users.map((user) => this.toAdminUser(user)));
+      const usersData = await Promise.all(
+        users.map((user) => this.toAdminUser(user)),
+      );
       return ResponseHelper.Success('Users Retrieved Successfully', usersData);
     } catch (e) {
       return ResponseHelper.Error(e);
@@ -256,7 +295,10 @@ export class UsersService {
         relations: { role: true, hospital: true },
       });
       if (!user) return ResponseHelper.Error('User not found', null);
-      return ResponseHelper.Success('Processed Successfuly', await this.toAdminUser(user));
+      return ResponseHelper.Success(
+        'Processed Successfuly',
+        await this.toAdminUser(user),
+      );
     } catch (e) {
       return ResponseHelper.Error(e);
     }
@@ -264,21 +306,38 @@ export class UsersService {
 
   private async assertFacilityTeamPermission(actor: User) {
     if (
-      !actor.active || actor.role?.name !== 'FACILITY_ADMIN' || !actor.hospital ||
-      actor.hospital.status !== 'ACTIVE' || actor.hospital.deleted_at ||
+      !actor.active ||
+      actor.role?.name !== 'FACILITY_ADMIN' ||
+      !actor.hospital ||
+      actor.hospital.status !== 'ACTIVE' ||
+      actor.hospital.deleted_at ||
       actor.verification_status !== 'VERIFIED'
-    ) throw new ForbiddenException('Active facility administrator access is required');
-    const grant = await this.dataSource.getRepository(RolePermission).findOneBy({
-      role_id: actor.role.id, permission: 'facility.users.manage',
-    });
-    if (!grant) throw new ForbiddenException('Missing permission: facility.users.manage');
+    )
+      throw new ForbiddenException(
+        'Active facility administrator access is required',
+      );
+    const grant = await this.dataSource
+      .getRepository(RolePermission)
+      .findOneBy({
+        role_id: actor.role.id,
+        permission: 'facility.users.manage',
+      });
+    if (!grant)
+      throw new ForbiddenException('Missing permission: facility.users.manage');
   }
 
-  async findAllForActor(actorId: string, options: {
-    take: number; skip: number; roleId?: number; facilityId?: string;
-  }) {
+  async findAllForActor(
+    actorId: string,
+    options: {
+      take: number;
+      skip: number;
+      roleId?: number;
+      facilityId?: string;
+    },
+  ) {
     const actor = await this.userRepository.findOne({
-      where: { id: actorId }, relations: { role: true, hospital: true },
+      where: { id: actorId },
+      relations: { role: true, hospital: true },
     });
     if (!actor?.active) throw new ForbiddenException('Active account required');
     if (actor.role?.name === 'FACILITY_ADMIN') {
@@ -290,13 +349,15 @@ export class UsersService {
 
   async findOneForActor(id: string, actorId: string) {
     const actor = await this.userRepository.findOne({
-      where: { id: actorId }, relations: { role: true, hospital: true },
+      where: { id: actorId },
+      relations: { role: true, hospital: true },
     });
     if (!actor?.active) throw new ForbiddenException('Active account required');
     if (actor.role?.name === 'FACILITY_ADMIN') {
       await this.assertFacilityTeamPermission(actor);
       const target = await this.userRepository.findOne({
-        where: { id }, relations: { hospital: true },
+        where: { id },
+        relations: { hospital: true },
       });
       if (!target || target.hospital?.id !== actor.hospital?.id)
         throw new NotFoundException('User not found in this facility');
@@ -304,84 +365,144 @@ export class UsersService {
     return this.findOneUser(id);
   }
 
-  async inviteFacilityUser(dto: FacilityInviteDto, actorId: string, ip: string) {
+  async inviteFacilityUser(
+    dto: FacilityInviteDto,
+    actorId: string,
+    ip: string,
+  ) {
     return this.dataSource.transaction(async (manager) => {
       const users = manager.getRepository(User);
       const actor = await users.findOne({
-        where: { id: actorId }, relations: { role: true, hospital: true },
+        where: { id: actorId },
+        relations: { role: true, hospital: true },
       });
-      if (!actor) throw new ForbiddenException('Active facility administrator access is required');
+      if (!actor)
+        throw new ForbiddenException(
+          'Active facility administrator access is required',
+        );
       await this.assertFacilityTeamPermission(actor);
       const expectedRegistry = dto.role_name === 'ONCOLOGIST' ? 'MDCN' : 'PCN';
       if (dto.license_registry !== expectedRegistry)
-        throw new ForbiddenException('The selected role does not match this license registry');
+        throw new ForbiddenException(
+          'The selected role does not match this license registry',
+        );
       const licenseNumber = dto.license_number.trim().toUpperCase();
       if (!/^[A-Z0-9/-]{4,24}$/.test(licenseNumber))
         throw new ForbiddenException('Invalid license number');
       const email = dto.email.trim().toLowerCase();
       const emailHash = this.encryptionService.hash(email);
       if (await users.findOneBy({ email_hash: emailHash }))
-        throw new ConflictException('An account with this email already exists.');
-      if (await users.createQueryBuilder('u')
-        .where('UPPER(BTRIM(u.license_number)) = :license', { license: licenseNumber })
-        .getOne())
-        throw new ConflictException('An account with this license already exists.');
-      const role = await manager.getRepository(Role).findOneBy({ name: dto.role_name });
-      if (!role) throw new ConflictException('Selected facility role is not configured');
-      const user = await users.save(users.create({
-        hospital: actor.hospital!, role,
-        first_name: dto.first_name.trim(), last_name: dto.last_name.trim(),
-        email: this.encryptionService.encrypt(email), email_hash: emailHash,
-        phone: this.encryptionService.encrypt(dto.phone.trim()),
-        phone_hash: this.encryptionService.hash(dto.phone),
-        password_hash: this.encryptionService.hashPassword(dto.password),
-        device_id: dto.device_id.trim(), allowed_ip: ip,
-        active: false,
-        account_type: dto.role_name === 'ONCOLOGIST' ? 'DOCTOR' : 'PHARMACIST',
-        license_number: licenseNumber, license_registry: expectedRegistry,
-        verification_status: 'MANUAL_REVIEW', registry_result: 'UNAVAILABLE',
-      }));
+        throw new ConflictException(
+          'An account with this email already exists.',
+        );
+      if (
+        await users
+          .createQueryBuilder('u')
+          .where('UPPER(BTRIM(u.license_number)) = :license', {
+            license: licenseNumber,
+          })
+          .getOne()
+      )
+        throw new ConflictException(
+          'An account with this license already exists.',
+        );
+      const role = await manager
+        .getRepository(Role)
+        .findOneBy({ name: dto.role_name });
+      if (!role)
+        throw new ConflictException('Selected facility role is not configured');
+      const user = await users.save(
+        users.create({
+          hospital: actor.hospital!,
+          role,
+          first_name: dto.first_name.trim(),
+          last_name: dto.last_name.trim(),
+          email: this.encryptionService.encrypt(email),
+          email_hash: emailHash,
+          phone: this.encryptionService.encrypt(dto.phone.trim()),
+          phone_hash: this.encryptionService.hash(dto.phone),
+          password_hash: this.encryptionService.hashPassword(dto.password),
+          device_id: dto.device_id.trim(),
+          allowed_ip: ip,
+          active: false,
+          account_type:
+            dto.role_name === 'ONCOLOGIST' ? 'DOCTOR' : 'PHARMACIST',
+          license_number: licenseNumber,
+          license_registry: expectedRegistry,
+          verification_status: 'MANUAL_REVIEW',
+          registry_result: 'UNAVAILABLE',
+        }),
+      );
       const app = await manager.getRepository(VerificationApplication).save({
-        user_id: user.id, registry: expectedRegistry, license_number: licenseNumber,
-        registry_result: 'UNAVAILABLE', status: 'MANUAL_REVIEW', reviewer_id: null,
-        reviewed_at: null, reason: null,
+        user_id: user.id,
+        registry: expectedRegistry,
+        license_number: licenseNumber,
+        registry_result: 'UNAVAILABLE',
+        status: 'MANUAL_REVIEW',
+        reviewer_id: null,
+        reviewed_at: null,
+        reason: null,
       });
       await manager.getRepository(FacilityMembershipRequest).save({
-        user_id: user.id, facility_id: actor.hospital!.id, status: 'APPROVED',
-        reviewer_id: actor.id, reviewed_at: new Date(), reason: 'Facility administrator invitation',
+        user_id: user.id,
+        facility_id: actor.hospital!.id,
+        status: 'APPROVED',
+        reviewer_id: actor.id,
+        reviewed_at: new Date(),
+        reason: 'Facility administrator invitation',
       });
       await manager.getRepository(AuditLog).save({
-        user: actor, action: 'FACILITY_USER_INVITED',
+        user: actor,
+        action: 'FACILITY_USER_INVITED',
         description: `User ${user.id} invited to facility ${actor.hospital!.id}; licence review pending`,
-        ip_address: ip || 'unknown', event_key: null, object_type: 'user', object_id: user.id,
-        request_id: null, before_status: null, after_status: 'MANUAL_REVIEW',
+        ip_address: ip || 'unknown',
+        event_key: null,
+        object_type: 'user',
+        object_id: user.id,
+        request_id: null,
+        before_status: null,
+        after_status: 'MANUAL_REVIEW',
       });
-      return ResponseHelper.Success('Facility invitation created; licence review is required before sign-in.', {
-        user: {
-          id: user.id, first_name: user.first_name, last_name: user.last_name,
-          email, role: { id: role.id, name: role.name }, active: false,
-          verification_status: app.status, facility_id: actor.hospital!.id,
+      return ResponseHelper.Success(
+        'Facility invitation created; licence review is required before sign-in.',
+        {
+          user: {
+            id: user.id,
+            first_name: user.first_name,
+            last_name: user.last_name,
+            email,
+            role: { id: role.id, name: role.name },
+            active: false,
+            verification_status: app.status,
+            facility_id: actor.hospital!.id,
+          },
         },
-      });
+      );
     });
   }
 
   async updateForActor(id: string, dto: UpdateUserDto, actorId: string) {
     const actor = await this.userRepository.findOne({
-      where: { id: actorId }, relations: { role: true, hospital: true },
+      where: { id: actorId },
+      relations: { role: true, hospital: true },
     });
     if (!actor?.active) throw new ForbiddenException('Active account required');
     if (actor.role?.name === 'FACILITY_ADMIN') {
       await this.assertFacilityTeamPermission(actor);
       const target = await this.userRepository.findOne({
-        where: { id }, relations: { role: true, hospital: true },
+        where: { id },
+        relations: { role: true, hospital: true },
       });
       if (!target || target.hospital?.id !== actor.hospital?.id)
         throw new NotFoundException('User not found in this facility');
       if (target.id === actor.id || target.role?.name === 'FACILITY_ADMIN')
-        throw new ForbiddenException('Facility administrators cannot change administrator accounts');
+        throw new ForbiddenException(
+          'Facility administrators cannot change administrator accounts',
+        );
       if (dto.password !== undefined)
-        throw new ForbiddenException('Facility administrators cannot set user passwords');
+        throw new ForbiddenException(
+          'Facility administrators cannot set user passwords',
+        );
     }
     return this.updateAsAdmin(id, dto, actorId);
   }

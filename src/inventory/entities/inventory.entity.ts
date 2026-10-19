@@ -37,6 +37,9 @@ export class Inventory {
   @Column()
   quantity!: number;
 
+  @Column({ type: 'text', nullable: true })
+  selling_unit!: string | null;
+
   @Column({
     default: 'AVAILABLE',
   })

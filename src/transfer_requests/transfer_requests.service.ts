@@ -84,9 +84,21 @@ export class TransferRequestsService {
   }
   async findAll(status?: string, facilityScope?: string) {
     const rows = await this.transfers.find({
-      where: facilityScope !== undefined
-        ? [{ ...(status ? { status } : {}), fromHospital: { id: facilityScope } }, { ...(status ? { status } : {}), toHospital: { id: facilityScope } }]
-        : status ? { status } : {},
+      where:
+        facilityScope !== undefined
+          ? [
+              {
+                ...(status ? { status } : {}),
+                fromHospital: { id: facilityScope },
+              },
+              {
+                ...(status ? { status } : {}),
+                toHospital: { id: facilityScope },
+              },
+            ]
+          : status
+            ? { status }
+            : {},
       relations: {
         fromHospital: true,
         toHospital: true,
@@ -109,41 +121,85 @@ export class TransferRequestsService {
       },
     });
     if (!row) throw new NotFoundException('Transfer not found');
-    if (facilityScope !== undefined && row.fromHospital.id !== facilityScope && row.toHospital.id !== facilityScope)
+    if (
+      facilityScope !== undefined &&
+      row.fromHospital.id !== facilityScope &&
+      row.toHospital.id !== facilityScope
+    )
       throw new NotFoundException('Transfer not found');
     return ResponseHelper.Success('Transfer retrieved', row);
   }
-  async decide(id: string, approved: boolean, actorId?: string, facilityScope?: string) {
+  async decide(
+    id: string,
+    approved: boolean,
+    actorId?: string,
+    facilityScope?: string,
+  ) {
+    return this.transfers.manager.transaction(async (manager) => {
+      const transfers = manager.getRepository(TransferRequest);
+      const inventory = manager.getRepository(Inventory);
+      await transfers
+        .createQueryBuilder('transfer')
+        .where('transfer.id = :id', { id })
+        .setLock('pessimistic_write')
+        .getOne();
+      const row = await transfers.findOne({
+        where: { id },
+        relations: { inventory: true, fromHospital: true, toHospital: true },
+      });
+      if (!row) throw new NotFoundException('Transfer not found');
+      const lockedStock = await inventory.findOne({
+        where: { id: row.inventory.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!lockedStock) throw new NotFoundException('Inventory item not found');
+      row.inventory = lockedStock;
+      if (facilityScope !== undefined && row.toHospital.id !== facilityScope)
+        throw new NotFoundException('Transfer not found for this facility');
+      if (!['PENDING', 'PENDING_APPROVAL'].includes(row.status))
+        throw new BadRequestException(
+          'Transfer is no longer awaiting approval',
+        );
+      if (approved && row.inventory.quantity < row.quantity)
+        throw new BadRequestException('Insufficient available stock');
+      if (approved) {
+        row.inventory.quantity -= row.quantity;
+        await inventory.save(row.inventory);
+      }
+      row.status = approved ? 'APPROVED' : 'REJECTED';
+      row.approved_at = new Date();
+      if (actorId) row.approvedBy = { id: actorId } as any;
+      return ResponseHelper.Success(
+        `Transfer ${row.status.toLowerCase()}`,
+        await transfers.save(row),
+      );
+    });
+  }
+  async update(
+    id: string,
+    dto: UpdateTransferRequestDto,
+    facilityScope?: string,
+  ) {
     const row = await this.transfers.findOne({
       where: { id },
-      relations: { inventory: true, fromHospital: true, toHospital: true },
+      relations: { fromHospital: true, toHospital: true },
     });
     if (!row) throw new NotFoundException('Transfer not found');
-    if (facilityScope !== undefined && row.toHospital.id !== facilityScope)
-      throw new NotFoundException('Transfer not found for this facility');
-    if (!['PENDING', 'PENDING_APPROVAL'].includes(row.status))
-      throw new BadRequestException('Transfer is no longer awaiting approval');
-    if (approved && row.inventory.quantity < row.quantity)
-      throw new BadRequestException('Insufficient available stock');
-    if (approved) {
-      row.inventory.quantity -= row.quantity;
-      await this.inventory.save(row.inventory);
-    }
-    row.status = approved ? 'APPROVED' : 'REJECTED';
-    row.approved_at = new Date();
-    if (actorId) row.approvedBy = { id: actorId } as any;
-    return ResponseHelper.Success(
-      `Transfer ${row.status.toLowerCase()}`,
-      await this.transfers.save(row),
-    );
-  }
-  async update(id: string, dto: UpdateTransferRequestDto, facilityScope?: string) {
-    const row = await this.transfers.findOne({ where: { id }, relations: { fromHospital: true, toHospital: true } });
-    if (!row) throw new NotFoundException('Transfer not found');
-    if (facilityScope !== undefined && row.fromHospital.id !== facilityScope && row.toHospital.id !== facilityScope)
+    if (
+      facilityScope !== undefined &&
+      row.fromHospital.id !== facilityScope &&
+      row.toHospital.id !== facilityScope
+    )
       throw new NotFoundException('Transfer not found');
-    if (facilityScope !== undefined && ('recipientFacilityId' in dto || 'fromHospital' in dto || 'toHospital' in dto))
-      throw new BadRequestException('Facility scope cannot be changed by a member');
+    if (
+      facilityScope !== undefined &&
+      ('recipientFacilityId' in dto ||
+        'fromHospital' in dto ||
+        'toHospital' in dto)
+    )
+      throw new BadRequestException(
+        'Facility scope cannot be changed by a member',
+      );
     Object.assign(row, dto);
     return ResponseHelper.Success(
       'Transfer updated',
@@ -151,7 +207,10 @@ export class TransferRequestsService {
     );
   }
   async remove(id: string, facilityScope?: string) {
-    const row = await this.transfers.findOne({ where: { id }, relations: { fromHospital: true, toHospital: true } });
+    const row = await this.transfers.findOne({
+      where: { id },
+      relations: { fromHospital: true, toHospital: true },
+    });
     if (!row) throw new NotFoundException('Transfer not found');
     if (facilityScope !== undefined && row.fromHospital.id !== facilityScope)
       throw new NotFoundException('Transfer not found');
@@ -165,9 +224,15 @@ export class TransferRequestsService {
     return ResponseHelper.Success('Transfer deleted', null);
   }
   async stats(facilityScope?: string) {
-    const rows = await this.transfers.find({ where: facilityScope !== undefined
-      ? [{ fromHospital: { id: facilityScope } }, { toHospital: { id: facilityScope } }]
-      : {} });
+    const rows = await this.transfers.find({
+      where:
+        facilityScope !== undefined
+          ? [
+              { fromHospital: { id: facilityScope } },
+              { toHospital: { id: facilityScope } },
+            ]
+          : {},
+    });
     return ResponseHelper.Success('Transfer statistics retrieved', {
       pending: rows.filter((r) =>
         ['PENDING', 'PENDING_APPROVAL'].includes(r.status),
@@ -177,9 +242,13 @@ export class TransferRequestsService {
   }
   async activeOrder(facilityScope?: string) {
     const row = await this.transfers.findOne({
-      where: facilityScope !== undefined
-        ? [{ status: 'IN_TRANSIT', fromHospital: { id: facilityScope } }, { status: 'IN_TRANSIT', toHospital: { id: facilityScope } }]
-        : { status: 'IN_TRANSIT' },
+      where:
+        facilityScope !== undefined
+          ? [
+              { status: 'IN_TRANSIT', fromHospital: { id: facilityScope } },
+              { status: 'IN_TRANSIT', toHospital: { id: facilityScope } },
+            ]
+          : { status: 'IN_TRANSIT' },
       relations: {
         fromHospital: true,
         toHospital: true,

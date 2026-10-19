@@ -1,3 +1,6 @@
+import { OperationalReadGuard } from '../guards/operational-read.guard';
+import { OperationalReadsService } from '../operations/operational-reads.service';
+import { OperationalQueryDto } from '../operations/operational-query.dto';
 import {
   Controller,
   Get,
@@ -16,32 +19,17 @@ interface AuthRequest extends Request {
 }
 
 @Controller('api/cold-chain-events')
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, OperationalReadGuard)
 export class ColdChainEventsController {
-  constructor(private readonly service: ColdChainEventsService) {}
+  constructor(private readonly reads: OperationalReadsService) {}
 
-  @Get() all(
-    @Req() request: AuthRequest,
-    @Query('unitId') unitId?: string,
-    @Query('status') status?: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-  ) {
-    return this.service.all(String(request.user!.id), {
-      unitId,
-      status,
-      from,
-      to,
-      page: Number(page),
-      limit: Number(limit),
-    });
+  @Get() all(@Req() req: AuthRequest, @Query() query: OperationalQueryDto) {
+    return this.reads.list('events', req.user?.id, query);
   }
 }
 
 @Controller('api/coldchain')
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, OperationalReadGuard)
 export class ColdChainStreamController {
   constructor(private readonly service: ColdChainEventsService) {}
 

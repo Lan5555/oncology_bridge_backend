@@ -1,3 +1,6 @@
+import { OperationalReadGuard } from '../guards/operational-read.guard';
+import { OperationalReadsService } from '../operations/operational-reads.service';
+import { OperationalQueryDto } from '../operations/operational-query.dto';
 import {
   Controller,
   Get,
@@ -15,26 +18,33 @@ import { Request } from 'express';
 import { AuthGuard } from '../guards/auth.guard';
 import { MedicineService } from './medicine.service';
 import { CreateMedicineDto } from './dto/create-medicine.dto';
-import { NetworkAdminGuard } from '../guards/network-admin.guard';
 import { MedicineCatalogGuard } from '../guards/medicine-catalog.guard';
 import { PatchMedicineCatalogDto } from './dto/patch-medicine-catalog.dto';
 
 type CatalogRequest = Request & { user?: { id: string } };
 
 @Controller(['medicine', 'api/medicines'])
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, OperationalReadGuard)
 export class MedicineController {
-  constructor(private readonly medicineService: MedicineService) {}
+  constructor(
+    private readonly medicineService: MedicineService,
+    private readonly reads: OperationalReadsService,
+  ) {}
 
   @Post()
-  @UseGuards(NetworkAdminGuard)
-  create(@Body() createMedicineDto: CreateMedicineDto) {
-    return this.medicineService.create(createMedicineDto);
+  @UseGuards(MedicineCatalogGuard)
+  create(
+    @Body() createMedicineDto: CreateMedicineDto,
+    @Req() req: CatalogRequest,
+  ) {
+    return this.medicineService.create(createMedicineDto, req.user!.id);
   }
 
-  @Get()
-  findAll(@Query('q') q?: string) {
-    return this.medicineService.findAll(q);
+  @Get() findAll(
+    @Query() query: OperationalQueryDto,
+    @Req() req: CatalogRequest,
+  ) {
+    return this.reads.list('medicines', req.user?.id, query);
   }
 
   @Get('gtin/:gtin') findByGtin(@Param('gtin') gtin: string) {
@@ -59,7 +69,11 @@ export class MedicineController {
 
   @Delete(':id')
   @UseGuards(MedicineCatalogGuard)
-  remove(@Param('id') id: string, @Req() req: CatalogRequest, @Ip() ip: string) {
+  remove(
+    @Param('id') id: string,
+    @Req() req: CatalogRequest,
+    @Ip() ip: string,
+  ) {
     return this.medicineService.remove(id, req.user!.id, ip);
   }
 }

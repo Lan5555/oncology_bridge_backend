@@ -25,21 +25,62 @@ export class NetworkAdminGuard implements CanActivate {
       relations: { role: true },
     });
     const role = user?.role?.name.trim().toLowerCase();
-    if (!user?.active || !['admin', 'c', 'network admin', 'network_admin', 'network-admin', 'superadmin'].includes(role ?? ''))
+    if (
+      !user?.active ||
+      ![
+        'admin',
+        'c',
+        'network admin',
+        'network_admin',
+        'network-admin',
+        'superadmin',
+      ].includes(role ?? '')
+    )
       throw new ForbiddenException('Network Admin role required');
     const permission = this.requiredPermission(request.method, request.path);
     const permissionRepo = this.dataSource.getRepository(RolePermission);
     const grants = await permissionRepo.findBy({ role_id: user.role.id });
     const assigned = new Set(grants.map((grant) => grant.permission));
     if (!assigned.has('admin.access') || !assigned.has(permission))
-      throw new ForbiddenException(`Missing permission: ${!assigned.has('admin.access') ? 'admin.access' : permission}`);
-    if (process.env.ADMIN_MFA_REQUIRED === 'true' && request.user.mfa !== true && !request.user.amr?.includes('mfa'))
-      throw new ForbiddenException('MFA is required for network administration');
+      throw new ForbiddenException(
+        `Missing permission: ${!assigned.has('admin.access') ? 'admin.access' : permission}`,
+      );
+    if (
+      process.env.ADMIN_MFA_REQUIRED === 'true' &&
+      request.user.mfa !== true &&
+      !request.user.amr?.includes('mfa')
+    )
+      throw new ForbiddenException(
+        'MFA is required for network administration',
+      );
     return true;
   }
 
   private requiredPermission(method: string, path: string): string {
     const p = path.toLowerCase();
+    if (method === 'GET') {
+      const reads: Record<string, string> = {
+        '/api/medicines': 'medicine.read',
+        '/medicine': 'medicine.read',
+        '/api/inventory': 'inventory.read',
+        '/api/expiry': 'inventory.read',
+        '/api/stock': 'inventory.read',
+        '/admin/api/marketplace/listings': 'marketplace.read',
+        '/api/prescriptions': 'prescription.read',
+        '/api/invoices': 'invoice.read',
+        '/api/transfers': 'transfer.read',
+        '/transfer-requests': 'transfer.read',
+        '/api/scans': 'scan.read',
+        '/scan-log': 'scan.read',
+        '/api/storage-units': 'coldchain.read',
+        '/api/cold-chain-events': 'coldchain.read',
+        '/api/coldchain': 'coldchain.read',
+        '/api/network': 'network.read',
+        '/api/research/inquiries': 'research.read',
+      };
+      for (const [prefix, permission] of Object.entries(reads))
+        if (p === prefix || p.startsWith(`${prefix}/`)) return permission;
+    }
     if (p.startsWith('/admin/api/verifications'))
       return method === 'GET' ? 'verification.read' : 'verification.decide';
     if (p.startsWith('/admin/api/integrations')) {
@@ -56,7 +97,11 @@ export class NetworkAdminGuard implements CanActivate {
       return method === 'GET' ? 'role.read' : 'role.update';
     if (p.startsWith('/api/users') || p.startsWith('/users'))
       return method === 'GET' ? 'user.read' : 'user.update';
-    if (p.startsWith('/hospital/api') || p.startsWith('/api/facilities') || p.startsWith('/api/network')) {
+    if (
+      p.startsWith('/hospital/api') ||
+      p.startsWith('/api/facilities') ||
+      p.startsWith('/api/network')
+    ) {
       if (method === 'GET') return 'facility.read';
       if (method === 'DELETE') return 'facility.delete';
       return 'facility.update';

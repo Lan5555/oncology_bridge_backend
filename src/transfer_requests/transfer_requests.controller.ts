@@ -1,3 +1,6 @@
+import { OperationalReadGuard } from '../guards/operational-read.guard';
+import { OperationalReadsService } from '../operations/operational-reads.service';
+import { OperationalQueryDto } from '../operations/operational-query.dto';
 import {
   Controller,
   Get,
@@ -16,18 +19,25 @@ import { TransferRequestsService } from './transfer_requests.service';
 import { CreateTransferRequestDto } from './dto/create-transfer_request.dto';
 import { UpdateTransferRequestDto } from './dto/update-transfer_request.dto';
 
-type FacilityRequest = Request & { user?: { facilityId?: string } };
+type FacilityRequest = Request & { user?: { id: string; facilityId?: string } };
 
 @Controller(['transfer-requests', 'api/transfers'])
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, OperationalReadGuard)
 export class TransferRequestsController {
   constructor(
     private readonly transferRequestsService: TransferRequestsService,
+    private readonly reads: OperationalReadsService,
   ) {}
 
   @Post()
-  create(@Body() createTransferRequestDto: CreateTransferRequestDto, @Req() req: FacilityRequest) {
-    return this.transferRequestsService.create(createTransferRequestDto, req.user?.facilityId);
+  create(
+    @Body() createTransferRequestDto: CreateTransferRequestDto,
+    @Req() req: FacilityRequest,
+  ) {
+    return this.transferRequestsService.create(
+      createTransferRequestDto,
+      req.user?.facilityId,
+    );
   }
 
   @Get('stats') stats(@Req() req: FacilityRequest) {
@@ -36,19 +46,40 @@ export class TransferRequestsController {
   @Get('active-order') activeOrder(@Req() req: FacilityRequest) {
     return this.transferRequestsService.activeOrder(req.user?.facilityId);
   }
-  @Get('suggest') suggest(@Query('inventoryItemId') id: string, @Req() req: FacilityRequest) {
+  @Get('suggest') suggest(
+    @Query('inventoryItemId') id: string,
+    @Req() req: FacilityRequest,
+  ) {
     return this.transferRequestsService.suggest(id, req.user?.facilityId);
   }
-  @Post(':id/approve') approve(@Param('id') id: string, @Req() req: FacilityRequest) {
-    return this.transferRequestsService.decide(id, true, undefined, req.user?.facilityId);
+  @Post(':id/approve') approve(
+    @Param('id') id: string,
+    @Req() req: FacilityRequest,
+  ) {
+    return this.transferRequestsService.decide(
+      id,
+      true,
+      undefined,
+      req.user?.facilityId,
+    );
   }
-  @Post(':id/reject') reject(@Param('id') id: string, @Req() req: FacilityRequest) {
-    return this.transferRequestsService.decide(id, false, undefined, req.user?.facilityId);
+  @Post(':id/reject') reject(
+    @Param('id') id: string,
+    @Req() req: FacilityRequest,
+  ) {
+    return this.transferRequestsService.decide(
+      id,
+      false,
+      undefined,
+      req.user?.facilityId,
+    );
   }
 
-  @Get()
-  findAll(@Query('status') status: string | undefined, @Req() req: FacilityRequest) {
-    return this.transferRequestsService.findAll(status, req.user?.facilityId);
+  @Get() findAll(
+    @Query() query: OperationalQueryDto,
+    @Req() req: FacilityRequest,
+  ) {
+    return this.reads.list('transfers', req.user?.id, query);
   }
 
   @Get(':id')
@@ -62,7 +93,11 @@ export class TransferRequestsController {
     @Body() updateTransferRequestDto: UpdateTransferRequestDto,
     @Req() req: FacilityRequest,
   ) {
-    return this.transferRequestsService.update(id, updateTransferRequestDto, req.user?.facilityId);
+    return this.transferRequestsService.update(
+      id,
+      updateTransferRequestDto,
+      req.user?.facilityId,
+    );
   }
 
   @Delete(':id')
