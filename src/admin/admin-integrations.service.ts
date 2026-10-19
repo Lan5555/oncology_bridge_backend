@@ -15,6 +15,9 @@ type IntegrationField = { key: string; label: string; type: FieldType; required:
 
 const SCHEMAS: Record<string, { name: string; description: string; fields: IntegrationField[] }> = {
   license_registry: { name: 'License registry', description: 'Professional license registry connectivity.', fields: [
+    { key: 'mdcn_registry_name', label: 'MDCN display name', type: 'text', required: false, description: 'Configured display name returned as registry_name for MDCN licence records.' },
+    { key: 'pcn_registry_name', label: 'PCN display name', type: 'text', required: false, description: 'Configured display name returned as registry_name for PCN licence records.' },
+    { key: 'pcn_premises_registry_name', label: 'PCN_PREMISES display name', type: 'text', required: false, description: 'Configured display name returned as registry_name for PCN_PREMISES licence records.' },
     { key: 'registry_url', label: 'Registry URL', type: 'url', required: true, description: 'HTTPS endpoint used to check license records.' },
     { key: 'api_key', label: 'API key', type: 'secret', required: true, description: 'Registry API credential.' },
     { key: 'sync_url', label: 'Sync URL', type: 'url', required: false, description: 'Optional provider endpoint for a registry sync job.' },
@@ -44,6 +47,13 @@ const SCHEMAS: Record<string, { name: string; description: string; fields: Integ
 @Injectable()
 export class AdminIntegrationsService {
   constructor(private readonly dataSource: DataSource) {}
+
+  // Internal-only connection access; no controller returns these credentials.
+  async licenseRegistryConnection(): Promise<{ url: string; apiKey: string } | null> {
+    const { values, secrets, complete } = await this.readConfiguration('license_registry');
+    if (!complete || typeof values.registry_url !== 'string') return null;
+    return { url: await this.assertPublicHttpsUrl(values.registry_url), apiKey: secrets.api_key };
+  }
 
   async health() {
     const integrations = await Promise.all(Object.entries(SCHEMAS).map(async ([key, schema]) => {
@@ -98,6 +108,8 @@ export class AdminIntegrationsService {
       } else {
         if (typeof value !== 'string' || value.length > 4096) throw new BadRequestException(`${fieldKey} must be a string no longer than 4096 characters`);
         const normalized = value.trim();
+        if (key === 'license_registry' && fieldKey.endsWith('_registry_name') && (normalized.length > 200 || Array.from(value).some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)))
+          throw new BadRequestException(`${fieldKey} must be a single-line display name no longer than 200 characters`);
         if (field.required && !normalized) throw new BadRequestException(`${fieldKey} is required`);
         if (field.type === 'url' && normalized) {
           let parsed: URL;
@@ -265,7 +277,7 @@ export class AdminIntegrationsService {
     const token = process.env.VAULT_TOKEN;
     if (!addr || !token) return {};
     try {
-      const response = await fetch(this.vaultUrl(addr, key), { headers: { 'X-Vault-Token': token } });
+      const response = await fetch(this.vaultUrl(addr, key), { headers: { 'X-Vault-Token': token }, signal: AbortSignal.timeout(8000), redirect: 'error' });
       if (response.status === 404) return {};
       if (!response.ok) throw new Error('vault read failed');
       const payload = await response.json() as { data?: { data?: Record<string, string> } };

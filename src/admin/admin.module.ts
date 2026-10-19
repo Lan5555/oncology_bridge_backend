@@ -8,8 +8,16 @@ import { IntegrationConfiguration } from './entities/integration-configuration.e
 import { IntegrationSyncJob } from './entities/integration-sync-job.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, IntegrationConfiguration, IntegrationSyncJob]), GuardsModule],
+  imports: [
+    TypeOrmModule.forFeature([
+      User,
+      IntegrationConfiguration,
+      IntegrationSyncJob,
+    ]),
+    GuardsModule,
+  ],
   controllers: [AdminIntegrationsController],
   providers: [AdminIntegrationsService],
+  exports: [AdminIntegrationsService],
 })
 export class AdminModule {}

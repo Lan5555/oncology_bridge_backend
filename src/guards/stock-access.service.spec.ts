@@ -11,6 +11,8 @@ import { VerificationApplication } from '../verification_applications/entities/v
 import { AuditLog } from '../audit_log/entities/audit_log.entity';
 import { UsersService } from '../users/users.service';
 import { EncryptionService } from '../encryption/encryption.service';
+import { RegistryMetadataService } from '../registry_metadata/registry-metadata.service';
+import { IntegrationConfiguration } from '../admin/entities/integration-configuration.entity';
 
 describe('explicit facility stock access', () => {
   let access: StockAccessService;
@@ -60,6 +62,12 @@ describe('explicit facility stock access', () => {
     auditRepo = { save: jest.fn().mockResolvedValue({}) };
     const manager = {
       getRepository: (entity: unknown) => {
+        if (entity === IntegrationConfiguration)
+          return {
+            findOneBy: async () => ({
+              values: { pcn_registry_name: 'Configured pharmacy display' },
+            }),
+          };
         if (entity === User) return usersRepo;
         if (entity === RolePermission)
           return {
@@ -89,6 +97,7 @@ describe('explicit facility stock access', () => {
       {} as Repository<Role>,
       db,
       access,
+      new RegistryMetadataService(db),
     );
   });
 
@@ -100,6 +109,25 @@ describe('explicit facility stock access', () => {
     expect(info.can_manage_facility_users).toBe(true);
     expect(info.permissions).toEqual(['facility.users.manage']);
     expect(info.allowed_pages).not.toContain('pg-scan');
+  });
+  it('returns applicant registry metadata based on the stored code rather than account type', async () => {
+    member.license_registry = 'PCN';
+    member.account_type = 'DOCTOR';
+    expect(await users.authenticatedUser('member')).toMatchObject({
+      registry: 'PCN',
+      license_registry: 'PCN',
+      registry_name: 'Configured pharmacy display',
+    });
+    member.license_registry = 'UNKNOWN';
+    expect(await users.authenticatedUser('member')).toMatchObject({
+      registry: 'UNKNOWN',
+      registry_name: null,
+    });
+    member.license_registry = null;
+    expect(await users.authenticatedUser('member')).toMatchObject({
+      registry: null,
+      registry_name: null,
+    });
   });
   it.each(['DOCTOR', 'PHARMACIST', 'PHARMACY_STORE'])(
     'allows verified %s stock admins with explicit grants and merges their pages',

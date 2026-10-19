@@ -24,6 +24,7 @@ import { FacilityInviteDto } from './dto/facility-invite.dto';
 import { VerificationApplication } from '../verification_applications/entities/verification-application.entity';
 import { FacilityMembershipRequest } from '../hospital/entities/facility-membership-request.entity';
 import { StockAccessService } from '../guards/stock-access.service';
+import { RegistryMetadataService } from '../registry_metadata/registry-metadata.service';
 
 @Injectable()
 export class UsersService {
@@ -35,6 +36,7 @@ export class UsersService {
     private readonly roleRepository: Repository<Role>,
     private readonly dataSource: DataSource,
     private readonly stockAccess: StockAccessService,
+    private readonly registryMetadata: RegistryMetadataService,
   ) {}
 
   private async toAdminUser(user: User) {
@@ -108,6 +110,8 @@ export class UsersService {
       account_type: user.account_type ?? null,
       license_number: user.license_number ?? null,
       license_registry: user.license_registry ?? null,
+      registry: user.license_registry ?? null,
+      registry_name: await this.registryMetadata.name(user.license_registry),
       verification_status: user.verification_status ?? null,
       registry_result: user.registry_result ?? null,
       last_login: user.last_login ?? null,
@@ -370,6 +374,7 @@ export class UsersService {
     actorId: string,
     ip: string,
   ) {
+    const registryNames = await this.registryMetadata.names();
     return this.dataSource.transaction(async (manager) => {
       const users = manager.getRepository(User);
       const actor = await users.findOne({
@@ -474,6 +479,8 @@ export class UsersService {
             role: { id: role.id, name: role.name },
             active: false,
             verification_status: app.status,
+            registry: user.license_registry ?? null,
+            registry_name: registryNames.get(user.license_registry?.trim().toUpperCase() ?? '') ?? null,
             facility_id: actor.hospital!.id,
           },
         },

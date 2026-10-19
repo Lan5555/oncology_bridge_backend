@@ -1,6 +1,6 @@
 The frontend origin must be included in the comma-separated `CORS_ORIGIN` list in production. The API uses `synchronize: false`:
 
-Admin operational list routes, read grants, pagination, privacy rules and the required migration are documented in [database/ADMIN-OPERATIONAL-READS.md](database/ADMIN-OPERATIONAL-READS.md).
+Admin operational list routes, read grants, pagination, privacy rules and the required migration are documented in [database/ADMIN-OPERATIONAL-READS.md](database/ADMIN-OPERATIONAL-READS.md). The automated facility licence lookup and separate manual evidence contracts are documented in [database/FACILITY-LICENSE-LOOKUP.md](database/FACILITY-LICENSE-LOOKUP.md).
 
 Medicine marketplace deployment, Cloudinary configuration, Paystack setup, and validation are documented in [database/MARKETPLACE.md](database/MARKETPLACE.md). Apply its migration before starting this version of the API.
 

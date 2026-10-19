@@ -17,6 +17,7 @@ import { Notification } from '../notification/entities/notification.entity';
 import { EncryptionService } from '../encryption/encryption.service';
 import { ResponseHelper } from '../helpers/response-helper';
 import { FacilityMembershipRequest } from '../hospital/entities/facility-membership-request.entity';
+import { RegistryMetadataService } from '../registry_metadata/registry-metadata.service';
 
 @Injectable()
 export class VerificationApplicationsService {
@@ -26,6 +27,7 @@ export class VerificationApplicationsService {
     private readonly rows: Repository<VerificationApplication>,
     private readonly dataSource: DataSource,
     private readonly encryption: EncryptionService,
+    private readonly registryMetadata: RegistryMetadataService,
   ) {}
 
   async adminList(options: { status?: string; page?: number; limit?: number; q?: string }) {
@@ -71,8 +73,10 @@ export class VerificationApplicationsService {
       );
     }
     const [items, total] = await Promise.all([qb.getRawMany(), countQuery.getCount()]);
+    const registryNames = await this.registryMetadata.names();
     const applications = items.map((r: Record<string, any>) => ({
       id: r.app_id, status: r.app_status, registry: r.app_registry,
+      registry_name: registryNames.get(String(r.app_registry).trim().toUpperCase()) ?? null,
       registry_result: r.app_result, license_number: r.app_license,
       submitted_at: r.app_submitted, reviewed_at: r.app_reviewed,
       last_checked_at: r.app_last_checked, reviewer_id: r.app_reviewer_id,
@@ -94,6 +98,7 @@ export class VerificationApplicationsService {
   }
 
   async recheck(id: string, actorId: string, ip: string) {
+    const registryNames = await this.registryMetadata.names();
     const now = Date.now();
     const attempts = (this.rechecks.get(actorId) ?? []).filter((at) => now - at < 60_000);
     if (attempts.length >= 10) throw new HttpException('Recheck rate limit exceeded', HttpStatus.TOO_MANY_REQUESTS);
@@ -126,12 +131,14 @@ export class VerificationApplicationsService {
       });
       return ResponseHelper.Success('Registry is unavailable; application remains in manual review.', {
         id: row.id, registryResult: row.registry_result, status: row.status,
+        registry: row.registry, registry_name: registryNames.get(row.registry.trim().toUpperCase()) ?? null,
         checkedAt: row.last_checked_at,
       });
     });
   }
 
   async decide(id: string, decision: 'VERIFIED' | 'REJECTED', actorId: string, reason?: string, ip?: string) {
+    const registryNames = await this.registryMetadata.names();
     const note = reason?.trim();
     if (decision === 'REJECTED' && !note)
       throw new UnprocessableEntityException('A reason is required to reject an application');
@@ -193,6 +200,7 @@ export class VerificationApplicationsService {
       });
       return ResponseHelper.Success('Verification decision recorded.', {
         id: row.id, status: row.status, registry: row.registry,
+        registry_name: registryNames.get(row.registry.trim().toUpperCase()) ?? null,
         registry_result: row.registry_result, license_number: row.license_number,
         submitted_at: row.submitted_at, reviewed_at: row.reviewed_at,
         reason: row.reason,
@@ -206,8 +214,10 @@ export class VerificationApplicationsService {
     });
   }
 
-  all(status?: string) {
-    return this.rows.find({ where: status && status !== 'ALL' ? { status } : {}, order: { submitted_at: 'DESC' } });
+  async all(status?: string) {
+    const rows = await this.rows.find({ where: status && status !== 'ALL' ? { status } : {}, order: { submitted_at: 'DESC' } });
+    const names = await this.registryMetadata.names();
+    return rows.map(row => ({ ...row, registry_name: names.get(row.registry.trim().toUpperCase()) ?? null }));
   }
   create(): never {
     throw new ConflictException('Applications are created through facility registration');

@@ -15,10 +15,20 @@ import { User } from '../users/entities/user.entity';
 import { JwtModule } from '@nestjs/jwt';
 import { FacilityMembershipRequest } from './entities/facility-membership-request.entity';
 import { FacilityLicenseCheck } from './entities/facility-license-check.entity';
+import { AdminModule } from '../admin/admin.module';
+import { FacilityLicenseLookupController } from './facility-license-lookup.controller';
+import { FacilityLicenseLookupService } from './facility-license-lookup.service';
+import { LicenseRegistryService } from './license-registry.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Hospital, User, FacilityMembershipRequest, FacilityLicenseCheck]),
+    AdminModule,
+    TypeOrmModule.forFeature([
+      Hospital,
+      User,
+      FacilityMembershipRequest,
+      FacilityLicenseCheck,
+    ]),
     EncryptionModule,
     UsersModule,
     JwtModule.register({
@@ -27,12 +37,17 @@ import { FacilityLicenseCheck } from './entities/facility-license-check.entity';
     }),
   ],
   controllers: [
+    FacilityLicenseLookupController,
     HospitalController,
     FacilitiesApiController,
     NetworkApiController,
     LicenseVerificationController,
     FacilityTeamMembershipController,
   ],
-  providers: [HospitalService],
+  providers: [
+    HospitalService,
+    FacilityLicenseLookupService,
+    LicenseRegistryService,
+  ],
 })
 export class HospitalModule {}

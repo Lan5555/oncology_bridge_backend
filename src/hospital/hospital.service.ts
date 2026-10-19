@@ -36,6 +36,7 @@ import { Notification } from '../notification/entities/notification.entity';
 import { RolePermission } from '../role/entities/role-permission.entity';
 import { FacilityLicenseCheckDto } from './dto/facility-license-check.dto';
 import { FacilityLicenseCheck } from './entities/facility-license-check.entity';
+import { RegistryMetadataService } from '../registry_metadata/registry-metadata.service';
 
 @Injectable()
 export class HospitalService {
@@ -49,6 +50,7 @@ export class HospitalService {
     private readonly userRepository: Repository<User>,
     private readonly jwtService: JwtService,
     private readonly dataSource: DataSource,
+    private readonly registryMetadata: RegistryMetadataService,
   ) {}
   private enforceRegistrationLimit(ip: string) {
     const now = Date.now();
@@ -107,6 +109,7 @@ export class HospitalService {
     ip: string,
   ) {
     this.enforceRegistrationLimit(ip);
+    const registryNames = await this.registryMetadata.names();
     const expectedRegistry: Record<string, string> = {
       DOCTOR: 'MDCN', PHARMACIST: 'PCN', PHARMACY_STORE: 'PCN_PREMISES',
     };
@@ -185,8 +188,8 @@ export class HospitalService {
       );
       return ResponseHelper.Success('Membership request submitted for review.', {
         membership_request: { id: request.id, status: request.status, facility_id: facility.id },
-        verification_application: { id: application.id, status: application.status },
-        user: { id: user.id, active: false, verification_status: resultStatus },
+        verification_application: { id: application.id, status: application.status, registry: application.registry, registry_name: registryNames.get(application.registry) ?? null },
+        user: { id: user.id, active: false, verification_status: resultStatus, registry: user.license_registry, registry_name: registryNames.get(user.license_registry ?? '') ?? null },
       });
     });
   }
@@ -207,14 +210,20 @@ export class HospitalService {
     const rows = await this.dataSource.getRepository(FacilityMembershipRequest).find({
       where: { facility_id: actor.hospital.id, status: normalizedStatus }, order: { submitted_at: 'ASC' },
     });
+    const registryNames = await this.registryMetadata.names();
     const items = await Promise.all(rows.map(async (row) => {
       const user = await this.userRepository.findOne({ where: { id: row.user_id } });
+      const review = await this.dataSource.getRepository(FacilityLicenseCheck).findOne({
+        where: { membership_request_id: row.id }, order: { checked_at: 'DESC', id: 'DESC' },
+      });
       return {
         id: row.id, status: row.status, submitted_at: row.submitted_at,
+        facility_license_review: review ? { ...review, registry_name: registryNames.get(review.registry.trim().toUpperCase()) ?? null, status: 'MANUAL_REVIEW' } : null,
         user: user ? {
           id: user.id, first_name: user.first_name, last_name: user.last_name,
           email: this.encryptionService.decrypt(user.email), account_type: user.account_type,
           license_number: user.license_number, license_registry: user.license_registry,
+          registry: user.license_registry ?? null, registry_name: registryNames.get(user.license_registry?.trim().toUpperCase() ?? '') ?? null,
           verification_status: user.verification_status,
         } : null,
       };
@@ -228,6 +237,7 @@ export class HospitalService {
     actorId: string,
     ip: string,
   ) {
+    const registryNames = await this.registryMetadata.names();
     return this.dataSource.transaction(async (manager) => {
       const users = manager.getRepository(User);
       const actor = await users.findOne({
@@ -256,7 +266,7 @@ export class HospitalService {
       });
       if (!application) throw new NotFoundException('License application not found');
       const evidence = dto.evidence.trim();
-      if (!evidence) throw new BadRequestException('Evidence is required');
+      if (evidence.length < 5 || evidence.length > 4000) throw new BadRequestException('Evidence must contain between 5 and 4000 characters after trimming.');
       const check = await manager.getRepository(FacilityLicenseCheck).save({
         membership_request_id: membership.id,
         facility_id: membership.facility_id,
@@ -282,6 +292,7 @@ export class HospitalService {
         application_id: application.id,
         registry: application.registry,
         result: check.result,
+        registry_name: registryNames.get(check.registry.trim().toUpperCase()) ?? null,
         evidence: check.evidence,
         checked_by: actor.id,
         checked_at: check.checked_at,
@@ -369,6 +380,7 @@ export class HospitalService {
     license?: { number: string; registry: string },
   ) {
     this.enforceRegistrationLimit(ip);
+    const registryNames = await this.registryMetadata.names();
     if (!accountType || !license)
       throw new BadRequestException('License details are required');
     const expectedRegistry: Record<string, string> = {
@@ -526,6 +538,8 @@ export class HospitalService {
             role: { id: adminRole.id, name: adminRole.name },
             account_type: accountType,
             license_number: normalizedLicense,
+            registry: license.registry,
+            registry_name: registryNames.get(license.registry) ?? null,
             verification_status: result.verificationStatus,
             first_name: safeUser.first_name,
             last_name: safeUser.last_name,

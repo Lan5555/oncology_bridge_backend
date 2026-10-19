@@ -37,6 +37,7 @@ import { IotDevicesModule } from './iot_devices/iot-devices.module';
 import { AdminModule } from './admin/admin.module';
 import { MarketplaceModule } from './marketplace/marketplace.module';
 import { OperationalReadsModule } from './operations/operational-reads.module';
+import { RegistryMetadataModule } from './registry_metadata/registry-metadata.module';
 
 @Module({
   imports: [
@@ -109,6 +110,7 @@ import { OperationalReadsModule } from './operations/operational-reads.module';
     AdminModule,
     MarketplaceModule,
     OperationalReadsModule,
+    RegistryMetadataModule,
   ],
   controllers: [AppController],
   providers: [AppService],

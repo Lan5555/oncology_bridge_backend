@@ -58,6 +58,11 @@ export class NetworkAdminGuard implements CanActivate {
 
   private requiredPermission(method: string, path: string): string {
     const p = path.toLowerCase();
+    if (
+      method === 'POST' &&
+      /^\/api\/facility-membership-requests\/[^/]+\/license-lookup\/?$/.test(p)
+    )
+      return 'verification.decide';
     if (method === 'GET') {
       const reads: Record<string, string> = {
         '/api/medicines': 'medicine.read',
