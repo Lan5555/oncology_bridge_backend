@@ -25,7 +25,10 @@ export class AuditLogController {
   constructor(private readonly auditLogService: AuditLogService) {}
 
   @Post()
-  create(@Body() createAuditLogDto: CreateAuditLogDto, @Req() req: AdminRequest) {
+  create(
+    @Body() createAuditLogDto: CreateAuditLogDto,
+    @Req() req: AdminRequest,
+  ) {
     return this.auditLogService.create(createAuditLogDto, req.user.id);
   }
 
@@ -42,15 +45,25 @@ export class AuditLogController {
       type,
       page: Number(page),
       limit: Number(limit),
-      actor, from, to,
+      actor,
+      from,
+      to,
     });
   }
 
   @Get('export.csv') exportCsv(
-    @Req() req: AdminRequest, @Query('type') type?: string,
-    @Query('actor') actor?: string, @Query('from') from?: string, @Query('to') to?: string,
+    @Req() req: AdminRequest,
+    @Query('type') type?: string,
+    @Query('actor') actor?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
-    return this.auditLogService.exportCsv(req.user.id, { type, actor, from, to });
+    return this.auditLogService.exportCsv(req.user.id, {
+      type,
+      actor,
+      from,
+      to,
+    });
   }
   @Get('verify') verify() {
     return this.auditLogService.verifyChain();

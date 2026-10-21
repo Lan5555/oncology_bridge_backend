@@ -14,6 +14,8 @@ export class CreateScanLogDto {
   @IsString() expiry!: string;
   @IsUUID() facilityId!: string;
   @IsOptional() @IsInt() @Min(1) quantity?: number;
+  @IsOptional() @IsIn(['vial', 'pack', 'bottle', 'box']) unit?: string;
+  @IsOptional() @IsIn(['vial', 'pack', 'bottle', 'box']) sellingUnit?: string;
   @IsOptional() @IsUUID() clientUuid?: string;
   @IsDateString() clientTs!: string;
   @IsIn(['NEW', 'AVAILABLE', 'NEAR_EXPIRY']) action!: string;

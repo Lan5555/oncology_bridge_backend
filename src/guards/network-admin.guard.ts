@@ -41,7 +41,26 @@ export class NetworkAdminGuard implements CanActivate {
     const permissionRepo = this.dataSource.getRepository(RolePermission);
     const grants = await permissionRepo.findBy({ role_id: user.role.id });
     const assigned = new Set(grants.map((grant) => grant.permission));
-    if (!assigned.has('admin.access') || !assigned.has(permission))
+    const rolePermissionsEndpoint =
+      /^\/(?:api\/roles|role)\/[^/]+\/permissions\/?$/i.test(request.path);
+    // role.update remains supported for existing administrators. role.manage
+    // authorizes viewing and replacing grants, without bypassing network/MFA checks.
+    const canManageRolePermissions =
+      rolePermissionsEndpoint &&
+      ['GET', 'PUT'].includes(request.method) &&
+      assigned.has('role.manage');
+    const legacyRoleUpdate =
+      rolePermissionsEndpoint &&
+      request.method === 'PUT' &&
+      assigned.has('role.update');
+    if (
+      !assigned.has('admin.access') ||
+      !(
+        assigned.has(permission) ||
+        canManageRolePermissions ||
+        legacyRoleUpdate
+      )
+    )
       throw new ForbiddenException(
         `Missing permission: ${!assigned.has('admin.access') ? 'admin.access' : permission}`,
       );
@@ -58,6 +77,11 @@ export class NetworkAdminGuard implements CanActivate {
 
   private requiredPermission(method: string, path: string): string {
     const p = path.toLowerCase();
+    if (
+      method === 'PUT' &&
+      /^\/(?:api\/roles|role)\/[^/]+\/permissions\/?$/.test(p)
+    )
+      return 'role.manage';
     if (
       method === 'POST' &&
       /^\/api\/facility-membership-requests\/[^/]+\/license-lookup\/?$/.test(p)

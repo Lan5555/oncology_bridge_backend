@@ -1,3 +1,17 @@
+import { transactionQueryBuilder } from '../../test/typeorm-query-builder';
+import { MedicineService } from '../medicine/medicine.service';
+import { OperationalReadsService } from '../operations/operational-reads.service';
+import { User } from '../users/entities/user.entity';
+import { RolePermission } from '../role/entities/role-permission.entity';
+import { VerificationApplication } from '../verification_applications/entities/verification-application.entity';
+import { activeInventory } from '../inventory/active-inventory';
+import { InventoryService } from '../inventory/inventory.service';
+import { Inventory } from '../inventory/entities/inventory.entity';
+import { Medicine } from '../medicine/entities/medicine.entity';
+import { Hospital } from '../hospital/entities/hospital.entity';
+import { AuditLog } from '../audit_log/entities/audit_log.entity';
+import { StockAccessService } from '../guards/stock-access.service';
+import { Repository } from 'typeorm';
 import { PGlite } from '@electric-sql/pglite';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
@@ -54,12 +68,12 @@ describe('marketplace PostgreSQL behavior', () => {
   beforeAll(async () => {
     pg = new PGlite();
     await pg.exec(`CREATE TABLE roles(id int PRIMARY KEY,name text);
-      CREATE TABLE hospitals(id uuid PRIMARY KEY,name text,city text,status text,deleted_at timestamptz);
+      CREATE TABLE hospitals(id uuid PRIMARY KEY,name text,city text,status text,deleted_at timestamptz,state text);
       CREATE TABLE users(id uuid PRIMARY KEY,role_id int,hospital_id uuid,email text,active boolean,account_type text,verification_status text);
       CREATE TABLE verification_applications(id uuid PRIMARY KEY,user_id uuid,status text,submitted_at timestamptz DEFAULT now());
       CREATE TABLE role_permissions(role_id int,permission text);
-      CREATE TABLE medicines(id uuid PRIMARY KEY,generic_name text,brand_name text,strength text,storage_temperature text,deleted_at timestamptz);
-      CREATE TABLE inventory(id uuid PRIMARY KEY,hospital_id uuid,medicine_id uuid,batch_number text,expiry_date date,quantity int,status text,updated_at timestamptz);
+      CREATE TABLE medicines(id uuid PRIMARY KEY,gtin text,generic_name text,brand_name text,strength text,storage_temperature text,deleted_at timestamptz);
+      CREATE TABLE inventory(id uuid PRIMARY KEY,hospital_id uuid,medicine_id uuid,batch_number text,expiry_date date,quantity int,status text,updated_at timestamptz,serial_number text,storage_unit_id uuid,created_at timestamptz DEFAULT now());
       CREATE TABLE prescriptions(id uuid PRIMARY KEY,prescriber_id uuid,pharmacy_facility_id uuid,drug_id uuid,qty int,auth_status text,order_stage text);`);
     await pg.exec(
       readFileSync(resolve(process.cwd(), 'database/marketplace.sql'), 'utf8'),
@@ -67,6 +81,15 @@ describe('marketplace PostgreSQL behavior', () => {
     await pg.exec(
       readFileSync(
         resolve(process.cwd(), 'database/inventory-access.sql'),
+        'utf8',
+      ),
+    );
+    await pg.exec(
+      'CREATE TABLE transfer_requests(id uuid PRIMARY KEY,medicine_id uuid,inventory_id uuid,status text); CREATE TABLE audit_logs(action text,description text);',
+    );
+    await pg.exec(
+      readFileSync(
+        resolve(process.cwd(), 'database/medicine-deletion.sql'),
         'utf8',
       ),
     );
@@ -78,6 +101,11 @@ describe('marketplace PostgreSQL behavior', () => {
           (callback ?? isolationOrCallback)({
             query: async (sql: string, args: unknown[] = []) =>
               (await tx.query(sql, args)).rows,
+            createQueryBuilder: () =>
+              transactionQueryBuilder(
+                async (sql, parameters) =>
+                  (await tx.query(sql, parameters)).rows,
+              ),
           }),
         ),
     };
@@ -105,11 +133,11 @@ describe('marketplace PostgreSQL behavior', () => {
   });
   beforeEach(async () => {
     jest.clearAllMocks();
-    await pg.exec(`TRUNCATE marketplace_orders,marketplace_listing_images,marketplace_image_uploads,marketplace_listings,
+    await pg.exec(`TRUNCATE audit_logs,transfer_requests,marketplace_orders,marketplace_listing_images,marketplace_image_uploads,marketplace_listings,
       prescriptions,verification_applications,role_permissions,inventory,medicines,users,hospitals,roles CASCADE;`);
     await query("INSERT INTO roles VALUES (1,'PHARMACIST'),(2,'DOCTOR')");
     await query(
-      "INSERT INTO hospitals VALUES ($1,'Seller pharmacy','Lagos','ACTIVE',NULL),($2,'Buyer clinic','Abuja','ACTIVE',NULL)",
+      "INSERT INTO hospitals(id,name,city,status,deleted_at) VALUES ($1,'Seller pharmacy','Lagos','ACTIVE',NULL),($2,'Buyer clinic','Abuja','ACTIVE',NULL)",
       [facility, buyerFacility],
     );
     await query(
@@ -128,7 +156,7 @@ describe('marketplace PostgreSQL behavior', () => {
       [medicine],
     );
     await query(
-      "INSERT INTO inventory VALUES ($1,$2,$3,'LOT-1',CURRENT_DATE+365,10,'AVAILABLE',now(),'vial')",
+      "INSERT INTO inventory(id,hospital_id,medicine_id,batch_number,expiry_date,quantity,status,updated_at,selling_unit) VALUES ($1,$2,$3,'LOT-1',CURRENT_DATE+365,10,'AVAILABLE',now(),'vial')",
       [stock, facility, medicine],
     );
     images.upload.mockImplementation(async () => {
@@ -216,6 +244,368 @@ describe('marketplace PostgreSQL behavior', () => {
       (await service.browse(buyer, { page: 2, limit: 1 })).data,
     ).toMatchObject({ total: 1, items: [] });
   });
+  it('retains 10 boxes from intake through listing at a price per box and refresh', async () => {
+    const batchId = randomUUID();
+    const inventoryRepo: any = {
+      findOne: async ({ where }: any) => {
+        const [row] = await query('SELECT * FROM inventory WHERE id=$1', [
+          where.id,
+        ]);
+        return row
+          ? {
+              ...row,
+              hospital: { id: row.hospital_id },
+              medicine: { id: row.medicine_id },
+            }
+          : null;
+      },
+      manager: {
+        transaction: async (cb: any) =>
+          pg.transaction(async (tx) => {
+            const run = async (sql: string, args: any[] = []) =>
+              (await tx.query(sql, args)).rows;
+            const manager: any = {
+              getRepository: (entity: any): any => {
+                if (entity === Hospital)
+                  return {
+                    findOne: async () =>
+                      (
+                        await run(
+                          'SELECT * FROM hospitals WHERE id=$1 FOR UPDATE',
+                          [facility],
+                        )
+                      )[0],
+                  };
+                if (entity === Medicine)
+                  return {
+                    createQueryBuilder: () => {
+                      const clauses: string[] = [];
+                      const params: any = {};
+                      const qb: any = {
+                        where: (sql: string, p: any) => {
+                          clauses.push(sql);
+                          Object.assign(params, p);
+                          return qb;
+                        },
+                        andWhere: (sql: string, p: any) => {
+                          clauses.push(sql);
+                          Object.assign(params, p);
+                          return qb;
+                        },
+                        setLock: () => qb,
+                        getOne: async () =>
+                          (
+                            await run(
+                              'SELECT m.* FROM medicines m WHERE ' +
+                                clauses
+                                  .join(' AND ')
+                                  .replaceAll(':medicineId', '$1')
+                                  .replaceAll(':facilityId', '$2'),
+                              [params.medicineId, params.facilityId],
+                            )
+                          )[0],
+                      };
+                      return qb;
+                    },
+                  };
+                if (entity === AuditLog) return { save: async () => ({}) };
+                if (entity === Inventory)
+                  return {
+                    create: (row: any) => row,
+                    exists: async () => false,
+                    save: async (row: any) => {
+                      await run(
+                        'INSERT INTO inventory(id,hospital_id,medicine_id,batch_number,expiry_date,quantity,selling_unit,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+                        [
+                          batchId,
+                          row.hospital.id,
+                          row.medicine.id,
+                          row.batch_number,
+                          row.expiry_date,
+                          row.quantity,
+                          row.selling_unit,
+                          row.status,
+                        ],
+                      );
+                      return { ...row, id: batchId };
+                    },
+                  };
+                throw new Error('Unexpected entity');
+              },
+            };
+            return cb(manager);
+          }),
+      },
+    };
+    const intake = new InventoryService(
+      inventoryRepo as Repository<Inventory>,
+      {} as Repository<Hospital>,
+      {} as Repository<Medicine>,
+      {
+        assertManage: async () => ({
+          hospital: { id: facility, name: 'Seller pharmacy' },
+        }),
+      } as unknown as StockAccessService,
+    );
+    const added = await intake.create(
+      {
+        medicineId: medicine,
+        batchNumber: 'BOX-001',
+        expiry: '2027-12-31',
+        quantity: 10,
+        unit: 'box',
+        facilityId: facility,
+      },
+      seller,
+    );
+    expect(added.data).toMatchObject({ unit: 'box', quantity: 10 });
+    // A mismatched listing unit must fail before uploading images.
+    await expect(
+      listing({ inventoryItemId: batchId, unit: 'vial' }),
+    ).rejects.toMatchObject({ status: 422 });
+    const listingId = await listing({
+      inventoryItemId: batchId,
+      unit: 'box',
+      unitPriceNaira: '2500.00',
+      availableQuantity: '10',
+    });
+    const refreshed = await intake.findOne(batchId, facility);
+    expect(refreshed.data).toMatchObject({ unit: 'box', quantity: 10 });
+    const browsed = await service.browse(buyer, new ListingQueryDto());
+    expect(
+      browsed.data?.items.find((row) => row.id === listingId),
+    ).toMatchObject({
+      unit: 'box',
+      unitPriceNaira: 2500,
+      availableQuantity: 10,
+      batchNumber: 'BOX-001',
+    });
+    expect(
+      await query(
+        'SELECT unit,quantity,price_kobo FROM marketplace_listings WHERE id=$1',
+        [listingId],
+      ),
+    ).toEqual([{ unit: 'box', quantity: 10, price_kobo: 250000 }]);
+  });
+  it('soft-deletes catalogue medicines atomically, hides stock across refreshes and preserves payment/history traces', async () => {
+    await query('UPDATE medicines SET catalog_facility_id=$1 WHERE id=$2', [
+      facility,
+      medicine,
+    ]);
+    const listingId = await listing();
+    const paid = await checkout(listingId, 2);
+    const paidReference = (paid.data as any).reference;
+    // Settle one order before deletion; keep another reservation unpaid.
+    await service.reconcile(paidReference);
+    const pending = await checkout(listingId, 1, randomUUID());
+    const pendingReference = (pending.data as any).reference;
+    await query(
+      "INSERT INTO transfer_requests VALUES ($1,$2,$3,'PENDING_APPROVAL')",
+      [randomUUID(), medicine, stock],
+    );
+    let failAudit = true;
+    const db: any = {
+      transaction: async (cb: any) =>
+        pg.transaction(async (tx) => {
+          const run = async (sql: string, args: any[] = []) =>
+            (await tx.query(sql, args)).rows;
+          return cb({
+            query: run,
+            createQueryBuilder: () => transactionQueryBuilder(run),
+            getRepository: (entity: any): any => {
+              if (entity === Medicine)
+                return {
+                  findOne: async ({ where }: any) =>
+                    (
+                      await run(
+                        'SELECT * FROM medicines WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',
+                        [where.id],
+                      )
+                    )[0],
+                  softDelete: async ({ id }: any) =>
+                    run('UPDATE medicines SET deleted_at=now() WHERE id=$1', [
+                      id,
+                    ]),
+                };
+              if (entity === Inventory) return { exists: async () => false };
+              if (entity === AuditLog)
+                return {
+                  save: async (row: any) => {
+                    if (failAudit) throw new Error('Audit unavailable');
+                    return run('INSERT INTO audit_logs VALUES ($1,$2)', [
+                      row.action,
+                      row.description,
+                    ]);
+                  },
+                };
+              throw new Error('Unexpected entity');
+            },
+          });
+        }),
+    };
+    const catalogue = new MedicineService(
+      {} as Repository<Medicine>,
+      db as DataSource,
+      {
+        catalogueActor: async () => ({ facilityId: facility }),
+      } as unknown as StockAccessService,
+    );
+    await expect(catalogue.remove(medicine, seller, 'test-ip')).rejects.toThrow(
+      'Audit unavailable',
+    );
+    expect(
+      (
+        await query('SELECT deleted_at FROM medicines WHERE id=$1', [medicine])
+      )[0].deleted_at,
+    ).toBeNull();
+    expect(
+      (
+        await query('SELECT status FROM marketplace_listings WHERE id=$1', [
+          listingId,
+        ])
+      )[0].status,
+    ).toBe('PUBLISHED');
+    failAudit = false;
+    const result = await catalogue.remove(medicine, seller, 'test-ip');
+    expect(result.data).toMatchObject({
+      medicine_active: false,
+      affected: {
+        batches: 1,
+        listings: 1,
+        reservations: 1,
+        paidOrdersForReview: 1,
+      },
+    });
+    expect(
+      (
+        await query('SELECT status,quantity FROM inventory WHERE id=$1', [
+          stock,
+        ])
+      )[0],
+    ).toEqual({ status: 'AVAILABLE', quantity: 8 });
+    expect(
+      (
+        await query('SELECT status FROM marketplace_listings WHERE id=$1', [
+          listingId,
+        ])
+      )[0].status,
+    ).toBe('SUSPENDED');
+    expect(
+      (await service.browse(buyer, new ListingQueryDto())).data,
+    ).toMatchObject({ total: 0, items: [] });
+    // A fresh service/session reads persisted state, rather than cached flags.
+    const readDb: any = {
+      getRepository: (entity: any): any => {
+        if (entity === User)
+          return {
+            findOne: async () => ({
+              id: seller,
+              active: true,
+              role: { id: 1, name: 'PHARMACIST' },
+              verification_status: 'VERIFIED',
+              hospital: { id: facility, status: 'ACTIVE' },
+            }),
+          };
+        if (entity === VerificationApplication)
+          return { findOne: async () => ({ status: 'VERIFIED' }) };
+        if (entity === RolePermission) return { findBy: async () => [] };
+        throw new Error('Unexpected repository');
+      },
+      transaction: async (_level: any, cb: any) => cb({ query }),
+    };
+    const refreshed = new OperationalReadsService(readDb);
+    const q = { page: 1, limit: 100, withinDays: 60 };
+    expect((await refreshed.list('inventory', seller, q)).data).toMatchObject({
+      total: 0,
+      items: [],
+    });
+    const history = await refreshed.list('inventory', seller, {
+      ...q,
+      includeDeletedMedicines: true,
+    });
+    expect(history.data?.items[0]).toMatchObject({
+      medicine: { id: medicine, active: false, deleted_at: expect.any(String) },
+      medicine_deleted: true,
+      medicine_active: false,
+      qty: 8,
+    });
+    expect(
+      (
+        await query(
+          'SELECT SUM(i.quantity)::int total FROM inventory i WHERE ' +
+            activeInventory(),
+        )
+      )[0].total,
+    ).toBeNull();
+    expect(
+      (
+        await query(
+          'SELECT reservation_state FROM marketplace_orders WHERE payment_reference=$1',
+          [pendingReference],
+        )
+      )[0].reservation_state,
+    ).toBe('RELEASED');
+    expect(
+      (
+        await query(
+          'SELECT payment_status,fulfillment_state FROM marketplace_orders WHERE payment_reference=$1',
+          [paidReference],
+        )
+      )[0],
+    ).toMatchObject({
+      payment_status: 'PAID',
+      fulfillment_state: 'PAYMENT_REVIEW_REQUIRED',
+    });
+    await expect(listing()).rejects.toMatchObject({ status: 409 });
+    await expect(checkout(listingId, 1, randomUUID())).rejects.toMatchObject({
+      status: 409,
+    });
+    await service.reconcile(pendingReference);
+    expect(
+      (
+        await query(
+          'SELECT payment_status FROM marketplace_orders WHERE payment_reference=$1',
+          [pendingReference],
+        )
+      )[0].payment_status,
+    ).toBe('PAID_REVIEW');
+    expect(
+      (await query('SELECT quantity FROM inventory WHERE id=$1', [stock]))[0]
+        .quantity,
+    ).toBe(8);
+    expect(await query('SELECT * FROM marketplace_orders')).toHaveLength(2);
+    expect(await query('SELECT * FROM transfer_requests')).toHaveLength(1);
+    const audit = JSON.parse(
+      (
+        await query(
+          "SELECT description FROM audit_logs WHERE action='MEDICINE_REMOVED'",
+        )
+      )[0].description,
+    );
+    expect(audit).toMatchObject({
+      medicineId: medicine,
+      physicalStockUnchanged: true,
+      suspendedListingIds: [listingId],
+      releasedReservationIds: expect.any(Array),
+    });
+    // Database guards also reject scanner/alternate writes and transfer approval.
+    await expect(
+      query('UPDATE inventory SET quantity=quantity+1 WHERE id=$1', [stock]),
+    ).rejects.toMatchObject({ constraint: 'medicine_active_required' });
+    await expect(
+      query("UPDATE transfer_requests SET status='APPROVED'"),
+    ).rejects.toMatchObject({ constraint: 'medicine_active_required' });
+    await query("UPDATE transfer_requests SET status='REJECTED'");
+    expect(
+      (await query('SELECT medicine_id,status FROM transfer_requests'))[0],
+    ).toEqual({ medicine_id: medicine, status: 'REJECTED' });
+    await expect(
+      query(
+        'INSERT INTO inventory(id,hospital_id,medicine_id,quantity) VALUES ($1,$2,$3,1)',
+        [randomUUID(), facility, medicine],
+      ),
+    ).rejects.toMatchObject({ constraint: 'medicine_active_required' });
+  });
   it('rejects unauthorized seller, wrong facility, unreviewed units and unavailable batches before uploading', async () => {
     await expect(service.createListing(buyer, input, [])).rejects.toMatchObject(
       { status: 403 },
@@ -237,6 +627,76 @@ describe('marketplace PostgreSQL behavior', () => {
     await expect(listing()).rejects.toMatchObject({ status: 422 });
     expect(images.upload).not.toHaveBeenCalled();
   });
+  it('requires marketplace.list separately from stock access and immediately honors revocation', async () => {
+    await query(
+      "DELETE FROM role_permissions WHERE permission='marketplace.list'",
+    );
+    await query("INSERT INTO role_permissions VALUES (1,'inventory.manage')");
+    await expect(listing()).rejects.toMatchObject({ status: 403 });
+    await query("INSERT INTO role_permissions VALUES (1,'marketplace.list')");
+    await listing();
+    await query(
+      "DELETE FROM role_permissions WHERE permission='marketplace.list'",
+    );
+    expect(
+      (await service.browse(buyer, new ListingQueryDto())).data,
+    ).toMatchObject({ total: 0 });
+  });
+  it('does not confer seller eligibility or foreign stock ownership on a network admin granted listing permission', async () => {
+    await query("UPDATE roles SET name='ADMIN' WHERE id=2");
+    await query(
+      "INSERT INTO role_permissions VALUES (2,'admin.access'),(2,'marketplace.list')",
+    );
+    await expect(service.createListing(buyer, input, [])).rejects.toMatchObject(
+      { status: 403 },
+    );
+    await query("UPDATE users SET account_type='PHARMACY_STORE' WHERE id=$1", [
+      buyer,
+    ]);
+    await expect(service.createListing(buyer, input, [])).rejects.toMatchObject(
+      { status: 403 },
+    );
+    expect(images.upload).not.toHaveBeenCalled();
+  });
+  it('requires the exact approved requirement and preserves its text through listing refresh', async () => {
+    const approved =
+      '  Refrigerate at 2?8?C.\nProtect from light; do not freeze.  ';
+    await query('UPDATE medicines SET storage_temperature=$1 WHERE id=$2', [
+      approved,
+      medicine,
+    ]);
+    await expect(listing({ storage: approved.trim() })).rejects.toMatchObject({
+      status: 422,
+    });
+    const listingId = await listing({ storage: approved });
+    expect(
+      (
+        await query('SELECT storage FROM marketplace_listings WHERE id=$1', [
+          listingId,
+        ])
+      )[0].storage,
+    ).toBe(approved);
+    const refreshed = await service.browse(buyer, new ListingQueryDto());
+    expect(
+      refreshed.data?.items.find((row) => row.id === listingId)?.storage,
+    ).toBe(approved);
+  });
+  it.each([null, '', '   '])(
+    'rejects a missing or blank approved requirement (%j) with an actionable error',
+    async (requirement) => {
+      await query('UPDATE medicines SET storage_temperature=$1 WHERE id=$2', [
+        requirement,
+        medicine,
+      ]);
+      await expect(listing()).rejects.toMatchObject({
+        status: 422,
+        response: {
+          message: expect.stringContaining('authorized catalogue manager'),
+        },
+      });
+      expect(images.upload).not.toHaveBeenCalled();
+    },
+  );
   it('rejects incorrect storage, expiry, excess quantity and duplicate batch listings', async () => {
     await expect(
       listing({ storage: 'room temperature' }),

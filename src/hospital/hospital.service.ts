@@ -73,14 +73,23 @@ export class HospitalService {
     }
   }
 
-  async publicFacilities(options: { q?: string; page?: number; limit?: number }) {
+  async publicFacilities(options: {
+    q?: string;
+    page?: number;
+    limit?: number;
+  }) {
     const page = Math.max(1, Math.floor(options.page || 1));
     const limit = Math.min(50, Math.max(1, Math.floor(options.limit || 50)));
     const query = options.q?.trim();
-    const qb = this.hospitalRepository.createQueryBuilder('facility')
+    const qb = this.hospitalRepository
+      .createQueryBuilder('facility')
       .select([
-        'facility.id', 'facility.name', 'facility.facility_type',
-        'facility.hospital_code', 'facility.city', 'facility.state',
+        'facility.id',
+        'facility.name',
+        'facility.facility_type',
+        'facility.hospital_code',
+        'facility.city',
+        'facility.state',
       ])
       .where('facility.status = :status', { status: FacilityStatus.ACTIVE })
       .andWhere('facility.deleted_at IS NULL')
@@ -96,7 +105,12 @@ export class HospitalService {
       .skip((page - 1) * limit)
       .take(limit)
       .getManyAndCount();
-    return ResponseHelper.Success('Active facilities loaded.', { facilities, page, limit, total });
+    return ResponseHelper.Success('Active facilities loaded.', {
+      facilities,
+      page,
+      limit,
+      total,
+    });
   }
 
   async registerUserToFacility(
@@ -111,10 +125,14 @@ export class HospitalService {
     this.enforceRegistrationLimit(ip);
     const registryNames = await this.registryMetadata.names();
     const expectedRegistry: Record<string, string> = {
-      DOCTOR: 'MDCN', PHARMACIST: 'PCN', PHARMACY_STORE: 'PCN_PREMISES',
+      DOCTOR: 'MDCN',
+      PHARMACIST: 'PCN',
+      PHARMACY_STORE: 'PCN_PREMISES',
     };
     if (expectedRegistry[body.account_type] !== body.license.registry)
-      throw new BadRequestException('Account type and license registry do not match');
+      throw new BadRequestException(
+        'Account type and license registry do not match',
+      );
     const normalizedLicense = body.license.number.trim().toUpperCase();
     if (!/^[A-Z0-9/-]{4,24}$/.test(normalizedLicense))
       throw new BadRequestException('Invalid license number');
@@ -123,74 +141,146 @@ export class HospitalService {
     return this.dataSource.transaction(async (manager) => {
       const facilities = manager.getRepository(Hospital);
       const facility = await facilities.findOne({
-        where: { id: body.facility_id }, lock: { mode: 'pessimistic_read' },
+        where: { id: body.facility_id },
+        lock: { mode: 'pessimistic_read' },
       });
-      if (!facility || facility.deleted_at || facility.status !== FacilityStatus.ACTIVE || !facility.membership_open)
-        throw new ConflictException('Selected facility is no longer accepting membership requests');
+      if (
+        !facility ||
+        facility.deleted_at ||
+        facility.status !== FacilityStatus.ACTIVE ||
+        !facility.membership_open
+      )
+        throw new ConflictException(
+          'Selected facility is no longer accepting membership requests',
+        );
       const users = manager.getRepository(User);
       if (await users.findOneBy({ email_hash: emailHash }))
-        throw new ConflictException('An account with this email already exists.');
-      if (await users.createQueryBuilder('u')
-        .where('UPPER(BTRIM(u.license_number)) = :license', { license: normalizedLicense })
-        .getOne())
-        throw new ConflictException('An account with this license already exists.');
+        throw new ConflictException(
+          'An account with this email already exists.',
+        );
+      if (
+        await users
+          .createQueryBuilder('u')
+          .where('UPPER(BTRIM(u.license_number)) = :license', {
+            license: normalizedLicense,
+          })
+          .getOne()
+      )
+        throw new ConflictException(
+          'An account with this license already exists.',
+        );
       const memberships = manager.getRepository(FacilityMembershipRequest);
       const roles = manager.getRepository(Role);
-      const roleName = body.account_type === 'DOCTOR' ? 'ONCOLOGIST' : 'PHARMACIST';
+      const roleName =
+        body.account_type === 'DOCTOR' ? 'ONCOLOGIST' : 'PHARMACIST';
       const memberRole = await roles.findOneBy({ name: roleName });
-      if (!memberRole) throw new BadRequestException(`${roleName} role is not configured`);
+      if (!memberRole)
+        throw new BadRequestException(`${roleName} role is not configured`);
       const resultStatus = 'MANUAL_REVIEW';
       const registryResult = 'UNAVAILABLE';
-      const user = await users.save(users.create({
-        hospital: facility,
-        role: memberRole,
-        first_name: body.user.first_name.trim(),
-        last_name: body.user.last_name.trim(),
-        email: this.encryptionService.encrypt(normalizedEmail),
-        email_hash: emailHash,
-        phone: this.encryptionService.encrypt(body.user.phone.trim()),
-        phone_hash: this.encryptionService.hash(body.user.phone),
-        password_hash: this.encryptionService.hashPassword(body.user.password),
-        device_id: body.user.device_id.trim(),
-        allowed_ip: ip,
-        active: false,
-        account_type: body.account_type,
-        license_number: normalizedLicense,
-        license_registry: body.license.registry,
-        verification_status: resultStatus,
-        registry_result: registryResult,
-      }));
-      const application = await manager.getRepository(VerificationApplication).save({
-        user_id: user.id, registry: body.license.registry, license_number: normalizedLicense,
-        registry_result: registryResult, status: resultStatus, reviewer_id: null,
-        reviewed_at: null, reason: null,
-      });
-      const request = await memberships.save(memberships.create({
-        user_id: user.id, facility_id: facility.id, status: 'PENDING',
-        reviewer_id: null, reviewed_at: null, reason: null,
-      }));
-      const audit = manager.getRepository(AuditLog);
-      await audit.save(audit.create({
-        user, action: 'FACILITY_MEMBERSHIP_REQUESTED',
-        description: `Membership request ${request.id} submitted for facility ${facility.id}`,
-        ip_address: ip || 'unknown', event_key: null, object_type: 'facility_membership_request',
-        object_id: request.id, request_id: null, before_status: null, after_status: 'PENDING',
-      }));
-      const facilityAdmins = await users.find({
-        where: { hospital: { id: facility.id }, role: { name: 'FACILITY_ADMIN' }, active: true },
-      });
-      if (facilityAdmins.length) await manager.getRepository(Notification).save(
-        facilityAdmins.map((admin) => manager.getRepository(Notification).create({
-          user: admin, title: 'Facility membership request',
-          message: `${user.first_name} ${user.last_name} requested to join your facility.`,
-          read: false, cold_chain_outbox_id: null,
-        })),
+      const user = await users.save(
+        users.create({
+          hospital: facility,
+          role: memberRole,
+          first_name: body.user.first_name.trim(),
+          last_name: body.user.last_name.trim(),
+          email: this.encryptionService.encrypt(normalizedEmail),
+          email_hash: emailHash,
+          phone: this.encryptionService.encrypt(body.user.phone.trim()),
+          phone_hash: this.encryptionService.hash(body.user.phone),
+          password_hash: this.encryptionService.hashPassword(
+            body.user.password,
+          ),
+          device_id: body.user.device_id.trim(),
+          allowed_ip: ip,
+          active: false,
+          account_type: body.account_type,
+          license_number: normalizedLicense,
+          license_registry: body.license.registry,
+          verification_status: resultStatus,
+          registry_result: registryResult,
+        }),
       );
-      return ResponseHelper.Success('Membership request submitted for review.', {
-        membership_request: { id: request.id, status: request.status, facility_id: facility.id },
-        verification_application: { id: application.id, status: application.status, registry: application.registry, registry_name: registryNames.get(application.registry) ?? null },
-        user: { id: user.id, active: false, verification_status: resultStatus, registry: user.license_registry, registry_name: registryNames.get(user.license_registry ?? '') ?? null },
+      const application = await manager
+        .getRepository(VerificationApplication)
+        .save({
+          user_id: user.id,
+          registry: body.license.registry,
+          license_number: normalizedLicense,
+          registry_result: registryResult,
+          status: resultStatus,
+          reviewer_id: null,
+          reviewed_at: null,
+          reason: null,
+        });
+      const request = await memberships.save(
+        memberships.create({
+          user_id: user.id,
+          facility_id: facility.id,
+          status: 'PENDING',
+          reviewer_id: null,
+          reviewed_at: null,
+          reason: null,
+        }),
+      );
+      const audit = manager.getRepository(AuditLog);
+      await audit.save(
+        audit.create({
+          user,
+          action: 'FACILITY_MEMBERSHIP_REQUESTED',
+          description: `Membership request ${request.id} submitted for facility ${facility.id}`,
+          ip_address: ip || 'unknown',
+          event_key: null,
+          object_type: 'facility_membership_request',
+          object_id: request.id,
+          request_id: null,
+          before_status: null,
+          after_status: 'PENDING',
+        }),
+      );
+      const facilityAdmins = await users.find({
+        where: {
+          hospital: { id: facility.id },
+          role: { name: 'FACILITY_ADMIN' },
+          active: true,
+        },
       });
+      if (facilityAdmins.length)
+        await manager.getRepository(Notification).save(
+          facilityAdmins.map((admin) =>
+            manager.getRepository(Notification).create({
+              user: admin,
+              title: 'Facility membership request',
+              message: `${user.first_name} ${user.last_name} requested to join your facility.`,
+              read: false,
+              cold_chain_outbox_id: null,
+            }),
+          ),
+        );
+      return ResponseHelper.Success(
+        'Membership request submitted for review.',
+        {
+          membership_request: {
+            id: request.id,
+            status: request.status,
+            facility_id: facility.id,
+          },
+          verification_application: {
+            id: application.id,
+            status: application.status,
+            registry: application.registry,
+            registry_name: registryNames.get(application.registry) ?? null,
+          },
+          user: {
+            id: user.id,
+            active: false,
+            verification_status: resultStatus,
+            registry: user.license_registry,
+            registry_name:
+              registryNames.get(user.license_registry ?? '') ?? null,
+          },
+        },
+      );
     });
   }
 
@@ -199,36 +289,81 @@ export class HospitalService {
     if (!['PENDING', 'APPROVED', 'REJECTED'].includes(normalizedStatus))
       throw new BadRequestException('Unsupported membership request status');
     const actor = await this.userRepository.findOne({
-      where: { id: actorId }, relations: { role: true, hospital: true },
+      where: { id: actorId },
+      relations: { role: true, hospital: true },
     });
-    if (!actor?.active || actor.role?.name !== 'FACILITY_ADMIN' || !actor.hospital || actor.hospital.status !== FacilityStatus.ACTIVE || actor.verification_status !== 'VERIFIED')
-      throw new ForbiddenException('Active facility administrator access is required');
-    const canManageMembers = await this.dataSource.getRepository(RolePermission).findOneBy({
-      role_id: actor.role.id, permission: 'facility.users.manage',
-    });
-    if (!canManageMembers) throw new ForbiddenException('Missing permission: facility.users.manage');
-    const rows = await this.dataSource.getRepository(FacilityMembershipRequest).find({
-      where: { facility_id: actor.hospital.id, status: normalizedStatus }, order: { submitted_at: 'ASC' },
-    });
-    const registryNames = await this.registryMetadata.names();
-    const items = await Promise.all(rows.map(async (row) => {
-      const user = await this.userRepository.findOne({ where: { id: row.user_id } });
-      const review = await this.dataSource.getRepository(FacilityLicenseCheck).findOne({
-        where: { membership_request_id: row.id }, order: { checked_at: 'DESC', id: 'DESC' },
+    if (
+      !actor?.active ||
+      actor.role?.name !== 'FACILITY_ADMIN' ||
+      !actor.hospital ||
+      actor.hospital.status !== FacilityStatus.ACTIVE ||
+      actor.verification_status !== 'VERIFIED'
+    )
+      throw new ForbiddenException(
+        'Active facility administrator access is required',
+      );
+    const canManageMembers = await this.dataSource
+      .getRepository(RolePermission)
+      .findOneBy({
+        role_id: actor.role.id,
+        permission: 'facility.users.manage',
       });
-      return {
-        id: row.id, status: row.status, submitted_at: row.submitted_at,
-        facility_license_review: review ? { ...review, registry_name: registryNames.get(review.registry.trim().toUpperCase()) ?? null, status: 'MANUAL_REVIEW' } : null,
-        user: user ? {
-          id: user.id, first_name: user.first_name, last_name: user.last_name,
-          email: this.encryptionService.decrypt(user.email), account_type: user.account_type,
-          license_number: user.license_number, license_registry: user.license_registry,
-          registry: user.license_registry ?? null, registry_name: registryNames.get(user.license_registry?.trim().toUpperCase() ?? '') ?? null,
-          verification_status: user.verification_status,
-        } : null,
-      };
-    }));
-    return ResponseHelper.Success('Membership requests loaded.', { requests: items });
+    if (!canManageMembers)
+      throw new ForbiddenException('Missing permission: facility.users.manage');
+    const rows = await this.dataSource
+      .getRepository(FacilityMembershipRequest)
+      .find({
+        where: { facility_id: actor.hospital.id, status: normalizedStatus },
+        order: { submitted_at: 'ASC' },
+      });
+    const registryNames = await this.registryMetadata.names();
+    const items = await Promise.all(
+      rows.map(async (row) => {
+        const user = await this.userRepository.findOne({
+          where: { id: row.user_id },
+        });
+        const review = await this.dataSource
+          .getRepository(FacilityLicenseCheck)
+          .findOne({
+            where: { membership_request_id: row.id },
+            order: { checked_at: 'DESC', id: 'DESC' },
+          });
+        return {
+          id: row.id,
+          status: row.status,
+          submitted_at: row.submitted_at,
+          facility_license_review: review
+            ? {
+                ...review,
+                registry_name:
+                  registryNames.get(review.registry.trim().toUpperCase()) ??
+                  null,
+                status: 'MANUAL_REVIEW',
+              }
+            : null,
+          user: user
+            ? {
+                id: user.id,
+                first_name: user.first_name,
+                last_name: user.last_name,
+                email: this.encryptionService.decrypt(user.email),
+                account_type: user.account_type,
+                license_number: user.license_number,
+                license_registry: user.license_registry,
+                registry: user.license_registry ?? null,
+                registry_name:
+                  registryNames.get(
+                    user.license_registry?.trim().toUpperCase() ?? '',
+                  ) ?? null,
+                verification_status: user.verification_status,
+              }
+            : null,
+        };
+      }),
+    );
+    return ResponseHelper.Success('Membership requests loaded.', {
+      requests: items,
+    });
   }
 
   async recordMembershipLicenseCheck(
@@ -241,32 +376,56 @@ export class HospitalService {
     return this.dataSource.transaction(async (manager) => {
       const users = manager.getRepository(User);
       const actor = await users.findOne({
-        where: { id: actorId }, relations: { role: true, hospital: true },
+        where: { id: actorId },
+        relations: { role: true, hospital: true },
       });
-      if (!actor?.active || actor.role?.name !== 'FACILITY_ADMIN' ||
-        !actor.hospital || actor.hospital.status !== FacilityStatus.ACTIVE ||
-        actor.hospital.deleted_at || actor.verification_status !== 'VERIFIED')
-        throw new ForbiddenException('Active facility administrator access is required');
+      if (
+        !actor?.active ||
+        actor.role?.name !== 'FACILITY_ADMIN' ||
+        !actor.hospital ||
+        actor.hospital.status !== FacilityStatus.ACTIVE ||
+        actor.hospital.deleted_at ||
+        actor.verification_status !== 'VERIFIED'
+      )
+        throw new ForbiddenException(
+          'Active facility administrator access is required',
+        );
       const permission = await manager.getRepository(RolePermission).findOneBy({
-        role_id: actor.role.id, permission: 'facility.users.manage',
+        role_id: actor.role.id,
+        permission: 'facility.users.manage',
       });
-      if (!permission) throw new ForbiddenException('Missing permission: facility.users.manage');
+      if (!permission)
+        throw new ForbiddenException(
+          'Missing permission: facility.users.manage',
+        );
 
       const requests = manager.getRepository(FacilityMembershipRequest);
       const membership = await requests.findOne({
-        where: { id: requestId }, lock: { mode: 'pessimistic_write' },
+        where: { id: requestId },
+        lock: { mode: 'pessimistic_write' },
       });
       if (!membership || membership.facility_id !== actor.hospital.id)
-        throw new NotFoundException('Membership request not found for this facility');
+        throw new NotFoundException(
+          'Membership request not found for this facility',
+        );
       if (membership.status !== 'PENDING')
-        throw new ConflictException('License evidence can only be recorded for a pending membership request');
+        throw new ConflictException(
+          'License evidence can only be recorded for a pending membership request',
+        );
 
-      const application = await manager.getRepository(VerificationApplication).findOne({
-        where: { user_id: membership.user_id }, order: { submitted_at: 'DESC' },
-      });
-      if (!application) throw new NotFoundException('License application not found');
+      const application = await manager
+        .getRepository(VerificationApplication)
+        .findOne({
+          where: { user_id: membership.user_id },
+          order: { submitted_at: 'DESC' },
+        });
+      if (!application)
+        throw new NotFoundException('License application not found');
       const evidence = dto.evidence.trim();
-      if (evidence.length < 5 || evidence.length > 4000) throw new BadRequestException('Evidence must contain between 5 and 4000 characters after trimming.');
+      if (evidence.length < 5 || evidence.length > 4000)
+        throw new BadRequestException(
+          'Evidence must contain between 5 and 4000 characters after trimming.',
+        );
       const check = await manager.getRepository(FacilityLicenseCheck).save({
         membership_request_id: membership.id,
         facility_id: membership.facility_id,
@@ -278,50 +437,102 @@ export class HospitalService {
         evidence,
       });
       await manager.getRepository(AuditLog).save({
-        user: actor, action: 'FACILITY_LICENSE_CHECK_RECORDED',
+        user: actor,
+        action: 'FACILITY_LICENSE_CHECK_RECORDED',
         description: `Facility license check evidence ${check.id} recorded for membership request ${membership.id}; result ${check.result}`,
-        ip_address: ip || 'unknown', event_key: null,
-        object_type: 'facility_license_check', object_id: check.id,
-        request_id: null, before_status: null, after_status: check.result,
+        ip_address: ip || 'unknown',
+        event_key: null,
+        object_type: 'facility_license_check',
+        object_id: check.id,
+        request_id: null,
+        before_status: null,
+        after_status: check.result,
       });
-      return ResponseHelper.Success('Facility license check evidence recorded.', {
-        id: check.id,
-        membership_request_id: membership.id,
-        user_id: membership.user_id,
-        facility_id: membership.facility_id,
-        application_id: application.id,
-        registry: application.registry,
-        result: check.result,
-        registry_name: registryNames.get(check.registry.trim().toUpperCase()) ?? null,
-        evidence: check.evidence,
-        checked_by: actor.id,
-        checked_at: check.checked_at,
-        verification_status: application.status,
-        user_active: (await users.findOneBy({ id: membership.user_id }))?.active ?? false,
-      });
+      return ResponseHelper.Success(
+        'Facility license check evidence recorded.',
+        {
+          id: check.id,
+          membership_request_id: membership.id,
+          user_id: membership.user_id,
+          facility_id: membership.facility_id,
+          application_id: application.id,
+          registry: application.registry,
+          result: check.result,
+          registry_name:
+            registryNames.get(check.registry.trim().toUpperCase()) ?? null,
+          evidence: check.evidence,
+          checked_by: actor.id,
+          checked_at: check.checked_at,
+          verification_status: application.status,
+          user_active:
+            (await users.findOneBy({ id: membership.user_id }))?.active ??
+            false,
+        },
+      );
     });
   }
 
-  async decideMembership(id: string, status: 'APPROVED' | 'REJECTED', reason: string | undefined, actorId: string, ip: string) {
+  async decideMembership(
+    id: string,
+    status: 'APPROVED' | 'REJECTED',
+    reason: string | undefined,
+    actorId: string,
+    ip: string,
+  ) {
     const note = reason?.trim();
-    if (status === 'REJECTED' && !note) throw new BadRequestException('A reason is required to reject a membership request');
+    if (status === 'REJECTED' && !note)
+      throw new BadRequestException(
+        'A reason is required to reject a membership request',
+      );
     return this.dataSource.transaction(async (manager) => {
       const users = manager.getRepository(User);
-      const actor = await users.findOne({ where: { id: actorId }, relations: { role: true, hospital: true } });
-      if (!actor?.active || actor.role?.name !== 'FACILITY_ADMIN' || !actor.hospital || actor.hospital.status !== FacilityStatus.ACTIVE)
-        throw new ForbiddenException('Active facility administrator access is required');
-      const canManageMembers = await manager.getRepository(RolePermission).findOneBy({
-        role_id: actor.role.id, permission: 'facility.users.manage',
+      const actor = await users.findOne({
+        where: { id: actorId },
+        relations: { role: true, hospital: true },
       });
-      if (!canManageMembers) throw new ForbiddenException('Missing permission: facility.users.manage');
+      if (
+        !actor?.active ||
+        actor.role?.name !== 'FACILITY_ADMIN' ||
+        !actor.hospital ||
+        actor.hospital.status !== FacilityStatus.ACTIVE
+      )
+        throw new ForbiddenException(
+          'Active facility administrator access is required',
+        );
+      const canManageMembers = await manager
+        .getRepository(RolePermission)
+        .findOneBy({
+          role_id: actor.role.id,
+          permission: 'facility.users.manage',
+        });
+      if (!canManageMembers)
+        throw new ForbiddenException(
+          'Missing permission: facility.users.manage',
+        );
       const requests = manager.getRepository(FacilityMembershipRequest);
-      const row = await requests.findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
-      if (!row || row.facility_id !== actor.hospital.id) throw new ConflictException('Membership request not found for this facility');
-      if (row.status !== 'PENDING') throw new ConflictException('Membership request has already been decided');
-      const user = await users.findOne({ where: { id: row.user_id }, relations: { hospital: true } });
-      const facility = await manager.getRepository(Hospital).findOne({ where: { id: row.facility_id } });
+      const row = await requests.findOne({
+        where: { id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!row || row.facility_id !== actor.hospital.id)
+        throw new ConflictException(
+          'Membership request not found for this facility',
+        );
+      if (row.status !== 'PENDING')
+        throw new ConflictException(
+          'Membership request has already been decided',
+        );
+      const user = await users.findOne({
+        where: { id: row.user_id },
+        relations: { hospital: true },
+      });
+      const facility = await manager
+        .getRepository(Hospital)
+        .findOne({ where: { id: row.facility_id } });
       if (!user || !facility || user.active)
-        throw new ConflictException('Membership applicant is no longer pending');
+        throw new ConflictException(
+          'Membership applicant is no longer pending',
+        );
       row.status = status;
       row.reviewer_id = actor.id;
       row.reviewed_at = new Date();
@@ -330,42 +541,83 @@ export class HospitalService {
       // Membership approval links the user to this facility, but does not
       // modify the separate licence verification record or its result.
       user.hospital = facility;
-      const latestApplication = await manager.getRepository(VerificationApplication).findOne({
-        where: { user_id: user.id }, order: { submitted_at: 'DESC' },
-      });
-      const licenseStatus = latestApplication?.status ?? user.verification_status;
+      const latestApplication = await manager
+        .getRepository(VerificationApplication)
+        .findOne({
+          where: { user_id: user.id },
+          order: { submitted_at: 'DESC' },
+        });
+      const licenseStatus =
+        latestApplication?.status ?? user.verification_status;
       const accountSetupComplete = Boolean(
-        user.first_name?.trim() && user.last_name?.trim() && user.email &&
-        user.phone && user.password_hash && user.device_id?.trim(),
+        user.first_name?.trim() &&
+        user.last_name?.trim() &&
+        user.email &&
+        user.phone &&
+        user.password_hash &&
+        user.device_id?.trim(),
       );
-      user.active = status === 'APPROVED' && facility.status === FacilityStatus.ACTIVE &&
-        licenseStatus === 'VERIFIED' && accountSetupComplete;
+      user.active =
+        status === 'APPROVED' &&
+        facility.status === FacilityStatus.ACTIVE &&
+        licenseStatus === 'VERIFIED' &&
+        accountSetupComplete;
       await users.save(user);
-      const activationGate = status !== 'APPROVED' ? 'MEMBERSHIP_NOT_APPROVED'
-        : facility.status !== FacilityStatus.ACTIVE ? 'FACILITY_INACTIVE'
-        : licenseStatus !== 'VERIFIED' ? (licenseStatus === 'REJECTED' ? 'LICENSE_REVIEW_REJECTED' : 'LICENSE_REVIEW_PENDING')
-        : !accountSetupComplete ? 'ACCOUNT_SETUP_INCOMPLETE' : null;
+      const activationGate =
+        status !== 'APPROVED'
+          ? 'MEMBERSHIP_NOT_APPROVED'
+          : facility.status !== FacilityStatus.ACTIVE
+            ? 'FACILITY_INACTIVE'
+            : licenseStatus !== 'VERIFIED'
+              ? licenseStatus === 'REJECTED'
+                ? 'LICENSE_REVIEW_REJECTED'
+                : 'LICENSE_REVIEW_PENDING'
+              : !accountSetupComplete
+                ? 'ACCOUNT_SETUP_INCOMPLETE'
+                : null;
       await manager.getRepository(Notification).save({
-        user, title: status === 'APPROVED' ? 'Membership approved' : 'Membership request declined',
-        message: status === 'APPROVED'
-          ? (user.active
-            ? 'Your facility membership was approved. You can now sign in.'
-            : licenseStatus === 'REJECTED'
-              ? 'Your facility membership was approved, but licence review was not approved. Contact support for next steps.'
-              : 'Your facility membership was approved. Licence review is still pending.')
-          : `Your facility membership request was declined. ${note}`,
-        read: false, cold_chain_outbox_id: null,
+        user,
+        title:
+          status === 'APPROVED'
+            ? 'Membership approved'
+            : 'Membership request declined',
+        message:
+          status === 'APPROVED'
+            ? user.active
+              ? 'Your facility membership was approved. You can now sign in.'
+              : licenseStatus === 'REJECTED'
+                ? 'Your facility membership was approved, but licence review was not approved. Contact support for next steps.'
+                : 'Your facility membership was approved. Licence review is still pending.'
+            : `Your facility membership request was declined. ${note}`,
+        read: false,
+        cold_chain_outbox_id: null,
       });
       await manager.getRepository(AuditLog).save({
-        user: { id: actorId } as User, action: 'FACILITY_MEMBERSHIP_DECISION',
+        user: { id: actorId } as User,
+        action: 'FACILITY_MEMBERSHIP_DECISION',
         description: `Membership request ${row.id} ${status.toLowerCase()} for facility ${row.facility_id}`,
-        ip_address: ip || 'unknown', event_key: null, object_type: 'facility_membership_request',
-        object_id: row.id, request_id: null, before_status: 'PENDING', after_status: status,
+        ip_address: ip || 'unknown',
+        event_key: null,
+        object_type: 'facility_membership_request',
+        object_id: row.id,
+        request_id: null,
+        before_status: 'PENDING',
+        after_status: status,
       });
       return ResponseHelper.Success('Membership decision recorded.', {
-        id: row.id, status: row.status, reason: row.reason,
-        facility: { id: facility.id, name: facility.name, status: facility.status },
-        user: { id: user.id, active: user.active, verification_status: licenseStatus },
+        id: row.id,
+        status: row.status,
+        reason: row.reason,
+        facility: {
+          id: facility.id,
+          name: facility.name,
+          status: facility.status,
+        },
+        user: {
+          id: user.id,
+          active: user.active,
+          verification_status: licenseStatus,
+        },
         license_status: licenseStatus,
         facility_status: facility.status,
         activation_gate: activationGate,
@@ -566,7 +818,7 @@ export class HospitalService {
           users: {
             role: true,
           },
-          inventory: true,
+          inventory: { medicine: true },
         },
       });
       if (!hospitals) {
@@ -614,6 +866,9 @@ export class HospitalService {
         );
         return {
           ...h,
+          inventory: (hospital.inventory ?? []).filter(
+            (item) => item.medicine && !item.medicine.deleted_at,
+          ),
           phone: this.encryptionService.decrypt(hospital.phone),
           email: this.encryptionService.decrypt(hospital.email),
           users,

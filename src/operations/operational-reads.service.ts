@@ -86,6 +86,11 @@ export class OperationalReadsService {
         return `$${values.length}`;
       };
       const where = [definition.where ?? 'true'];
+      if (
+        (resource === 'inventory' || resource === 'expiry') &&
+        !query.includeDeletedMedicines
+      )
+        where.push('m.deleted_at IS NULL');
       if (!network) where.push(definition.scope(add(actor.hospital.id)));
       else if (query.facilityId)
         where.push(definition.scope(add(query.facilityId)));
@@ -131,7 +136,7 @@ export class OperationalReadsService {
       }
       const base = `FROM ${definition.from} WHERE ${where.join(' AND ')}`;
       const page = query.page ?? 1,
-        limit = query.limit ?? 25;
+        limit = Math.min(100, query.limit ?? 25);
       return await this.db.transaction('REPEATABLE READ', async (manager) => {
         const [count] = await manager.query<{ total: number }[]>(
           `SELECT count(*)::int total ${base}`,

@@ -280,7 +280,11 @@ describe('automated facility licence lookup HTTP contract and persistence', () =
     });
   });
   afterEach(() => jest.restoreAllMocks());
-  const post = (who = 'facility', path = lookupPath, body: unknown = {}) =>
+  const post = (
+    who = 'facility',
+    path = lookupPath,
+    body: object | string = {},
+  ) =>
     request(app.getHttpServer())
       .post(path)
       .set('Authorization', `Bearer ${tokens[who]}`)

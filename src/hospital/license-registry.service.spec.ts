@@ -17,25 +17,21 @@ describe('server registry adapter', () => {
   let service: LicenseRegistryService;
   let connection: jest.Mock;
   beforeEach(() => {
-    connection = jest
-      .fn()
-      .mockResolvedValue({
-        url: 'https://registry.example.test/lookup',
-        apiKey: 'SERVER-SECRET',
-      });
+    connection = jest.fn().mockResolvedValue({
+      url: 'https://registry.example.test/lookup',
+      apiKey: 'SERVER-SECRET',
+    });
     service = new LicenseRegistryService({
       licenseRegistryConnection: connection,
     } as unknown as AdminIntegrationsService);
   });
   afterEach(() => jest.restoreAllMocks());
   const respond = (payload: unknown) =>
-    jest
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(
-        new Response(JSON.stringify(payload), {
-          headers: { 'content-type': 'application/json' },
-        }),
-      );
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(payload), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
 
   it.each([
     [{ query, found: true, record }, 'MATCH'],

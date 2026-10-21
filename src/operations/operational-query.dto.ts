@@ -1,6 +1,7 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsDateString,
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -12,8 +13,22 @@ import {
 } from 'class-validator';
 
 export class OperationalQueryDto {
+  @IsOptional()
+  @Transform(({ value }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  includeDeletedMedicines?: boolean;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(1000000) page = 1;
-  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 25;
+  @IsOptional()
+  @Type(() => Number)
+  @Transform(({ value }) =>
+    Number.isInteger(value) && value > 100 ? 100 : value,
+  )
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit = 25;
   @IsOptional() @IsString() @MaxLength(200) q?: string;
   @IsOptional() @IsUUID() facilityId?: string;
   @IsOptional() @IsString() @MaxLength(50) status?: string;

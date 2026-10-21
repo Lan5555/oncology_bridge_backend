@@ -25,13 +25,18 @@ export interface ReadDefinition {
 const FACILITY =
   "jsonb_build_object('id',h.id,'name',h.name,'city',h.city,'state',h.state,'status',h.status)";
 const MEDICINE =
-  "jsonb_build_object('id',m.id,'generic_name',m.generic_name,'brand_name',m.brand_name,'strength',m.strength,'gtin',m.gtin)";
+  "jsonb_build_object('id',m.id,'generic_name',m.generic_name,'brand_name',m.brand_name,'strength',m.strength,'gtin',m.gtin,'storage_temperature',m.storage_temperature,'active',(m.deleted_at IS NULL),'deleted_at',m.deleted_at)";
+// Shared by catalogue reads and manual intake authorization.
+export const catalogueMedicineScope = (p: string) =>
+  `(m.catalog_facility_id=${p} OR EXISTS(SELECT 1 FROM inventory owned WHERE owned.medicine_id=m.id AND owned.hospital_id=${p}))`;
 const INVENTORY_FROM =
-  'inventory i JOIN medicines m ON m.id=i.medicine_id JOIN hospitals h ON h.id=i.hospital_id';
+  'inventory i LEFT JOIN medicines m ON m.id=i.medicine_id JOIN hospitals h ON h.id=i.hospital_id';
 const INVENTORY: ReadDefinition = {
   from: INVENTORY_FROM,
   select: `i.id,i.hospital_id,i.medicine_id,i.batch_number,i.serial_number,i.expiry_date,i.quantity,i.status,
-    i.selling_unit,i.storage_unit_id,i.created_at,i.updated_at,${FACILITY} hospital,h.name facility,${MEDICINE} medicine,
+    i.selling_unit,i.selling_unit unit,i.storage_unit_id,i.created_at,i.updated_at,${FACILITY} hospital,h.name facility,CASE WHEN m.id IS NULL THEN NULL ELSE ${MEDICINE} END medicine,
+    CASE WHEN m.id IS NULL THEN 'UNLINKED' ELSE 'LINKED' END "linkageStatus",i.batch_number "batchNumber",
+    (m.deleted_at IS NOT NULL) medicine_deleted,(m.id IS NOT NULL AND m.deleted_at IS NULL) medicine_active,
     m.generic_name drug,m.brand_name brand,m.gtin,i.batch_number lot,i.serial_number serial,i.quantity qty,
     i.expiry_date expiry,h.id "facilityId",h.name facility_name`,
   search:
@@ -48,8 +53,7 @@ export const READ_DEFINITIONS: Record<OperationalResource, ReadDefinition> = {
       CASE WHEN h.id IS NULL THEN NULL ELSE ${FACILITY} END facility`,
     search:
       "concat_ws(' ',m.generic_name,m.brand_name,m.gtin,m.manufacturer,m.strength,h.name)",
-    scope: (p) =>
-      `(m.catalog_facility_id=${p} OR EXISTS(SELECT 1 FROM inventory owned WHERE owned.medicine_id=m.id AND owned.hospital_id=${p}))`,
+    scope: catalogueMedicineScope,
     order: 'm.generic_name ASC,m.id ASC',
     where: 'm.deleted_at IS NULL',
   },

@@ -480,7 +480,10 @@ export class UsersService {
             active: false,
             verification_status: app.status,
             registry: user.license_registry ?? null,
-            registry_name: registryNames.get(user.license_registry?.trim().toUpperCase() ?? '') ?? null,
+            registry_name:
+              registryNames.get(
+                user.license_registry?.trim().toUpperCase() ?? '',
+              ) ?? null,
             facility_id: actor.hospital!.id,
           },
         },

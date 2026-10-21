@@ -23,12 +23,17 @@ export class MeController {
   @Get() me(@Req() req: AuthenticatedRequest) {
     return this.users.findOneUser(String(req.user?.id));
   }
-  @Patch() async update(@Req() req: AuthenticatedRequest, @Body() body: UpdateMeDto) {
+  @Patch() async update(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: UpdateMeDto,
+  ) {
     const id = String(req.user?.id);
     await this.users.update(id, body);
     return this.users.findOneUser(id);
   }
-  @Post('verification/resubmit') async resubmit(@Req() req: AuthenticatedRequest) {
+  @Post('verification/resubmit') async resubmit(
+    @Req() req: AuthenticatedRequest,
+  ) {
     return {
       success: true,
       message:

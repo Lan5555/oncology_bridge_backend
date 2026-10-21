@@ -1,0 +1,9 @@
+# Ignore specific environment files
+.env
+.env.local
+.env.production
+.env.development
+
+# Ignore entire directories containing config or secrets
+config/secrets/
+certs/

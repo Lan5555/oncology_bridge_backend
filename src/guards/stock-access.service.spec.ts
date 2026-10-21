@@ -155,6 +155,35 @@ describe('explicit facility stock access', () => {
       expect(info.permissions).not.toContain('marketplace.list');
     },
   );
+  it('returns dashboard grants through authenticated user and /api/me without promoting the role', async () => {
+    member.role.name = 'PHARMACIST';
+    permissions = ['dashboard.read'];
+    expect(await users.authenticatedUser('member')).toMatchObject({
+      role: { name: 'PHARMACIST' },
+      permissions: ['dashboard.read'],
+    });
+    expect(await users.findOneUser('member')).toMatchObject({
+      data: { permissions: ['dashboard.read'] },
+    });
+    applicationStatus = 'REJECTED';
+    expect((await users.authenticatedUser('member')).permissions).toEqual([]);
+  });
+  it('returns the current listing grant through authenticated user and /api/me data independently of stock access', async () => {
+    member.account_type = 'PHARMACY_STORE';
+    permissions = ['marketplace.list'];
+    expect((await users.authenticatedUser('member')).permissions).toEqual([
+      'marketplace.list',
+    ]);
+    expect(await users.findOneUser('member')).toMatchObject({
+      success: true,
+      data: { permissions: ['marketplace.list'], can_manage_inventory: false },
+    });
+    permissions = [];
+    expect(await users.findOneUser('member')).toMatchObject({
+      success: true,
+      data: { permissions: [] },
+    });
+  });
   it('accepts role stock grants and individual grants without automatically granting team management', async () => {
     member.role.name = 'PHARMACIST';
     permissions = ['inventory.manage'];

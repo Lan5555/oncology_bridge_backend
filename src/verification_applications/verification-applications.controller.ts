@@ -1,5 +1,12 @@
 import {
-  Body, Controller, Get, Param, Post, Query, Req, UseGuards,
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { AuthGuard } from '../guards/auth.guard';
@@ -21,22 +28,49 @@ export class AdminVerificationController {
   constructor(private readonly service: VerificationApplicationsService) {}
   @Get()
   list(
-    @Query('status') status = 'ALL', @Query('page') page?: string,
-    @Query('limit') limit?: string, @Query('q') q?: string,
+    @Query('status') status = 'ALL',
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('q') q?: string,
   ) {
-    return this.service.adminList({ status, page: Number(page), limit: Number(limit), q });
+    return this.service.adminList({
+      status,
+      page: Number(page),
+      limit: Number(limit),
+      q,
+    });
   }
   @Post(':applicationId/recheck')
   recheck(@Param('applicationId') id: string, @Req() req: AdminRequest) {
     return this.service.recheck(id, req.user.id, req.ip ?? 'unknown');
   }
   @Post(':applicationId/approve')
-  approve(@Param('applicationId') id: string, @Req() req: AdminRequest, @Body() body?: DecisionDto) {
-    return this.service.decide(id, 'VERIFIED', req.user.id, body?.reason, req.ip);
+  approve(
+    @Param('applicationId') id: string,
+    @Req() req: AdminRequest,
+    @Body() body?: DecisionDto,
+  ) {
+    return this.service.decide(
+      id,
+      'VERIFIED',
+      req.user.id,
+      body?.reason,
+      req.ip,
+    );
   }
   @Post(':applicationId/reject')
-  reject(@Param('applicationId') id: string, @Req() req: AdminRequest, @Body() body?: DecisionDto) {
-    return this.service.decide(id, 'REJECTED', req.user.id, body?.reason, req.ip);
+  reject(
+    @Param('applicationId') id: string,
+    @Req() req: AdminRequest,
+    @Body() body?: DecisionDto,
+  ) {
+    return this.service.decide(
+      id,
+      'REJECTED',
+      req.user.id,
+      body?.reason,
+      req.ip,
+    );
   }
 }
 
@@ -45,12 +79,20 @@ export class AdminVerificationController {
 @UseGuards(AuthGuard, NetworkAdminGuard)
 export class VerificationApplicationsController {
   constructor(private readonly service: VerificationApplicationsService) {}
-  @Get() all(@Query('status') status?: string) { return this.service.all(status); }
+  @Get() all(@Query('status') status?: string) {
+    return this.service.all(status);
+  }
   @Post(':id/decision') decide(
     @Param('id') id: string,
     @Body() body: LegacyDecisionDto,
     @Req() req: AdminRequest,
   ) {
-    return this.service.decide(id, body.status, req.user.id, body.reason, req.ip);
+    return this.service.decide(
+      id,
+      body.status,
+      req.user.id,
+      body.reason,
+      req.ip,
+    );
   }
 }

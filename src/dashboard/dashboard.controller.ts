@@ -1,16 +1,29 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Header,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { DashboardService } from './dashboard.service';
 import { AuthGuard } from '../guards/auth.guard';
-import { NetworkAdminGuard } from '../guards/network-admin.guard';
+import { DashboardReadGuard } from '../guards/dashboard-read.guard';
+import type { DashboardRequest } from '../guards/dashboard-read.guard';
 @Controller('api/dashboard')
-@UseGuards(AuthGuard, NetworkAdminGuard)
+@UseGuards(AuthGuard, DashboardReadGuard)
 export class DashboardController {
   constructor(private readonly dashboard: DashboardService) {}
-  @Get('summary') summary() {
-    return this.dashboard.summary();
+  @Get('summary') @Header('Cache-Control', 'private, no-store') summary(
+    @Req() req: DashboardRequest,
+  ) {
+    return this.dashboard.summary(req.dashboardScope);
   }
-  @Get('charts') charts() {
-    return this.dashboard.charts();
+  @Get('charts') @Header('Cache-Control', 'private, no-store') charts(
+    @Req() req: DashboardRequest,
+  ) {
+    return this.dashboard.charts(req.dashboardScope);
   }
 }
 

@@ -3,7 +3,6 @@ import { InventoryService } from './inventory.service';
 import {
   ExpiryController,
   InventoryController,
-  NearExpiryController,
   StockSearchController,
 } from './inventory.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -13,12 +12,7 @@ import { Medicine } from '../medicine/entities/medicine.entity';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Inventory, Hospital, Medicine])],
-  controllers: [
-    InventoryController,
-    StockSearchController,
-    ExpiryController,
-    NearExpiryController,
-  ],
+  controllers: [InventoryController, StockSearchController, ExpiryController],
   providers: [InventoryService],
 })
 export class InventoryModule {}

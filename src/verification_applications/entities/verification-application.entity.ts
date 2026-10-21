@@ -15,7 +15,8 @@ export class VerificationApplication {
   @Column({ default: 'PENDING' }) status!: string;
   @Column('uuid', { nullable: true }) reviewer_id!: string | null;
   @Column({ type: 'timestamptz', nullable: true }) reviewed_at!: Date | null;
-  @Column({ type: 'timestamptz', nullable: true }) last_checked_at!: Date | null;
+  @Column({ type: 'timestamptz', nullable: true })
+  last_checked_at!: Date | null;
   @Column('text', { nullable: true }) reason!: string | null;
   @CreateDateColumn() submitted_at!: Date;
 }

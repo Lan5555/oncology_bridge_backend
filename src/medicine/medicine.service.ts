@@ -140,6 +140,10 @@ export class MedicineService {
   }
   async remove(id: string, actorId: string, ip: string) {
     return this.dataSource.transaction(async (manager) => {
+      // Same lock order as marketplace checkout/payment: serialize before rows.
+      await manager.query(
+        "SELECT pg_advisory_xact_lock(hashtext('oncology-marketplace-stock'))",
+      );
       const medicines = manager.getRepository(Medicine);
       const actor = await this.stockAccess.catalogueActor(
         actorId,
@@ -160,10 +164,44 @@ export class MedicineService {
         );
       await this.assertNoForeignStock(manager, id, actor.facilityId);
       await medicines.softDelete({ id });
+      const batches = await manager
+        .createQueryBuilder()
+        .select('batch.id', 'id')
+        .addSelect('batch.hospital_id', 'hospital_id')
+        .from('inventory', 'batch')
+        .where('batch.medicine_id = :medicineId', { medicineId: id })
+        .getRawMany<{ id: string; hospital_id: string }>();
+      const listings = await manager.query(
+        `UPDATE marketplace_listings SET status='SUSPENDED'
+        WHERE inventory_item_id IN (SELECT id FROM inventory WHERE medicine_id=$1)
+        AND status<>'SUSPENDED' RETURNING id`,
+        [id],
+      );
+      const reservations = await manager.query(
+        `UPDATE marketplace_orders SET reservation_state='RELEASED'
+        WHERE inventory_item_id IN (SELECT id FROM inventory WHERE medicine_id=$1)
+        AND reservation_state='RESERVED' RETURNING id`,
+        [id],
+      );
+      const paidOrders = await manager.query(
+        `UPDATE marketplace_orders SET fulfillment_state='PAYMENT_REVIEW_REQUIRED'
+        WHERE inventory_item_id IN (SELECT id FROM inventory WHERE medicine_id=$1)
+        AND payment_status IN ('PAID','PAID_REVIEW')
+        AND fulfillment_state='AWAITING_CLINICAL_RELEASE' RETURNING id`,
+        [id],
+      );
       await manager.getRepository(AuditLog).save({
         user: { id: actorId } as User,
         action: 'MEDICINE_REMOVED',
-        description: `Medicine ${id} removed from active catalog using soft delete`,
+        description: JSON.stringify({
+          medicineId: id,
+          actorId,
+          batches,
+          suspendedListingIds: listings.map((r: { id: string }) => r.id),
+          releasedReservationIds: reservations.map((r: { id: string }) => r.id),
+          paidOrderReviewIds: paidOrders.map((r: { id: string }) => r.id),
+          physicalStockUnchanged: true,
+        }),
         ip_address: ip || 'unknown',
         event_key: null,
         object_type: 'medicine',
@@ -175,6 +213,13 @@ export class MedicineService {
       return ResponseHelper.Success('Medicine removed from active use', {
         id,
         status: 'REMOVED',
+        medicine_active: false,
+        affected: {
+          batches: batches.length,
+          listings: listings.length,
+          reservations: reservations.length,
+          paidOrdersForReview: paidOrders.length,
+        },
       });
     });
   }

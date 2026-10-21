@@ -13,7 +13,11 @@ export class AdminGuard implements CanActivate {
       .switchToHttp()
       .getRequest<{ user?: { role: Role } }>();
     const { user } = request;
-    if (user?.role !== 'ADMIN' && user?.role !== 'FACILITY_ADMIN' && user?.role !== 'SUPERADMIN') {
+    if (
+      user?.role !== 'ADMIN' &&
+      user?.role !== 'FACILITY_ADMIN' &&
+      user?.role !== 'SUPERADMIN'
+    ) {
       throw new UnauthorizedException('Admins Only');
     }
     return true;

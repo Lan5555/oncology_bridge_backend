@@ -17,7 +17,12 @@ import { EncryptionModule } from '../encryption/encryption.module';
       secret: process.env.JWT_SECRET || 'default_secret_key',
       signOptions: { expiresIn: '1h' },
     }),
-    TypeOrmModule.forFeature([User, UserSession, VerificationApplication, FacilityMembershipRequest]),
+    TypeOrmModule.forFeature([
+      User,
+      UserSession,
+      VerificationApplication,
+      FacilityMembershipRequest,
+    ]),
     UsersModule,
     EncryptionModule,
   ],

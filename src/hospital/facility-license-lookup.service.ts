@@ -171,7 +171,9 @@ export class FacilityLicenseLookupService {
       throw new UnprocessableEntityException(
         'The registry adapter did not produce valid review evidence.',
       );
-    const registryName = await this.registryMetadata.name(prepared.input.registry);
+    const registryName = await this.registryMetadata.name(
+      prepared.input.registry,
+    );
     return this.db.transaction(async (manager) => {
       const current = await this.prepare(manager, requestId, actorId, true);
       if (current.snapshot !== prepared.snapshot)

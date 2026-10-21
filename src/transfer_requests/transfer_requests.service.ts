@@ -1,3 +1,4 @@
+import { Medicine } from '../medicine/entities/medicine.entity';
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import {
   BadRequestException,
@@ -24,63 +25,80 @@ export class TransferRequestsService {
     private readonly hospitals: Repository<Hospital>,
   ) {}
   async create(dto: CreateTransferRequestDto, facilityScope?: string) {
-    const [item, recipient] = await Promise.all([
-      this.inventory.findOne({
-        where: { id: dto.inventoryItemId },
-        relations: { hospital: true, medicine: true },
-      }),
-      this.hospitals.findOneBy({ id: dto.recipientFacilityId }),
-    ]);
-    if (!item || !recipient)
-      throw new NotFoundException(
-        'Inventory item or recipient facility not found',
+    return this.transfers.manager.transaction(async (manager) => {
+      const inventory = manager.getRepository(Inventory);
+      const hospitals = manager.getRepository(Hospital);
+      const transfers = manager.getRepository(TransferRequest);
+      const [item, recipient] = await Promise.all([
+        inventory.findOne({
+          where: { id: dto.inventoryItemId },
+          relations: { hospital: true, medicine: true },
+        }),
+        hospitals.findOneBy({ id: dto.recipientFacilityId }),
+      ]);
+      if (!item || !recipient)
+        throw new NotFoundException(
+          'Inventory item or recipient facility not found',
+        );
+      if (facilityScope !== undefined && item.hospital.id !== facilityScope)
+        throw new NotFoundException(
+          'Inventory item not found in your facility',
+        );
+      const medicine =
+        item.medicine &&
+        (await manager.getRepository(Medicine).findOne({
+          where: { id: item.medicine.id },
+          lock: { mode: 'pessimistic_read' },
+        }));
+      if (!medicine || medicine.deleted_at)
+        throw new BadRequestException(
+          'Deleted medicine stock cannot be transferred',
+        );
+      const qty = Number(dto.quantity);
+      if (!Number.isInteger(qty) || qty < 1)
+        throw new BadRequestException('quantity must be a positive integer');
+      if (
+        item.status.toUpperCase() === 'QUARANTINED' ||
+        item.status.toUpperCase() === 'DISPOSED'
+      )
+        throw new BadRequestException('This stock cannot be transferred');
+      if (qty > item.quantity)
+        throw new BadRequestException('quantity exceeds available stock');
+      if (item.hospital.id === recipient.id)
+        throw new BadRequestException(
+          'Donor and recipient facilities must differ',
+        );
+      const distance = this.distanceKm(
+        item.hospital.latitude,
+        item.hospital.longitude,
+        recipient.latitude,
+        recipient.longitude,
       );
-    if (facilityScope !== undefined && item.hospital.id !== facilityScope)
-      throw new NotFoundException('Inventory item not found in your facility');
-    const qty = Number(dto.quantity);
-    if (!Number.isInteger(qty) || qty < 1)
-      throw new BadRequestException('quantity must be a positive integer');
-    if (
-      item.status.toUpperCase() === 'QUARANTINED' ||
-      item.status.toUpperCase() === 'DISPOSED'
-    )
-      throw new BadRequestException('This stock cannot be transferred');
-    if (qty > item.quantity)
-      throw new BadRequestException('quantity exceeds available stock');
-    if (item.hospital.id === recipient.id)
-      throw new BadRequestException(
-        'Donor and recipient facilities must differ',
+      if (distance !== null && distance > 80)
+        throw new BadRequestException(
+          'Recipient is outside the 80 km transfer radius',
+        );
+      const queued = await transfers.find({
+        where: { inventory: { id: item.id }, status: 'PENDING_APPROVAL' },
+      });
+      if (
+        queued.reduce((n, t) => n + Number(t.quantity), 0) + qty >
+        item.quantity
+      )
+        throw new BadRequestException('Quantity exceeds unreserved stock');
+      const transfer = transfers.create({
+        fromHospital: item.hospital,
+        toHospital: recipient,
+        medicine: item.medicine,
+        inventory: item,
+        quantity: qty,
+        status: 'PENDING_APPROVAL',
+      });
+      return ResponseHelper.Success(
+        'Transfer submitted for approval',
+        await transfers.save(transfer),
       );
-    const distance = this.distanceKm(
-      item.hospital.latitude,
-      item.hospital.longitude,
-      recipient.latitude,
-      recipient.longitude,
-    );
-    if (distance !== null && distance > 80)
-      throw new BadRequestException(
-        'Recipient is outside the 80 km transfer radius',
-      );
-    const queued = await this.transfers.find({
-      where: { inventory: { id: item.id }, status: 'PENDING_APPROVAL' },
     });
-    if (
-      queued.reduce((n, t) => n + Number(t.quantity), 0) + qty >
-      item.quantity
-    )
-      throw new BadRequestException('Quantity exceeds unreserved stock');
-    const transfer = this.transfers.create({
-      fromHospital: item.hospital,
-      toHospital: recipient,
-      medicine: item.medicine,
-      inventory: item,
-      quantity: qty,
-      status: 'PENDING_APPROVAL',
-    });
-    return ResponseHelper.Success(
-      'Transfer submitted for approval',
-      await this.transfers.save(transfer),
-    );
   }
   async findAll(status?: string, facilityScope?: string) {
     const rows = await this.transfers.find({
@@ -145,7 +163,13 @@ export class TransferRequestsService {
         .getOne();
       const row = await transfers.findOne({
         where: { id },
-        relations: { inventory: true, fromHospital: true, toHospital: true },
+        withDeleted: true,
+        relations: {
+          inventory: true,
+          medicine: true,
+          fromHospital: true,
+          toHospital: true,
+        },
       });
       if (!row) throw new NotFoundException('Transfer not found');
       const lockedStock = await inventory.findOne({
@@ -160,6 +184,18 @@ export class TransferRequestsService {
         throw new BadRequestException(
           'Transfer is no longer awaiting approval',
         );
+      if (approved) {
+        const medicine =
+          row.medicine &&
+          (await manager.getRepository(Medicine).findOne({
+            where: { id: row.medicine.id },
+            lock: { mode: 'pessimistic_read' },
+          }));
+        if (!medicine || medicine.deleted_at)
+          throw new BadRequestException(
+            'Deleted medicine stock cannot be transferred',
+          );
+      }
       if (approved && row.inventory.quantity < row.quantity)
         throw new BadRequestException('Insufficient available stock');
       if (approved) {
@@ -182,7 +218,7 @@ export class TransferRequestsService {
   ) {
     const row = await this.transfers.findOne({
       where: { id },
-      relations: { fromHospital: true, toHospital: true },
+      relations: { fromHospital: true, toHospital: true, medicine: true },
     });
     if (!row) throw new NotFoundException('Transfer not found');
     if (
@@ -199,6 +235,10 @@ export class TransferRequestsService {
     )
       throw new BadRequestException(
         'Facility scope cannot be changed by a member',
+      );
+    if (!row.medicine || row.medicine.deleted_at)
+      throw new BadRequestException(
+        'Deleted medicine stock cannot be transferred',
       );
     Object.assign(row, dto);
     return ResponseHelper.Success(
@@ -285,9 +325,13 @@ export class TransferRequestsService {
   async suggest(inventoryItemId: string, facilityScope?: string) {
     const item = await this.inventory.findOne({
       where: { id: inventoryItemId },
-      relations: { hospital: true },
+      relations: { hospital: true, medicine: true },
     });
     if (!item) throw new NotFoundException('Inventory item not found');
+    if (!item.medicine || item.medicine.deleted_at)
+      throw new BadRequestException(
+        'Deleted medicine stock cannot be transferred',
+      );
     if (facilityScope !== undefined && item.hospital.id !== facilityScope)
       throw new NotFoundException('Inventory item not found in your facility');
     const facilities = await this.hospitals.find({

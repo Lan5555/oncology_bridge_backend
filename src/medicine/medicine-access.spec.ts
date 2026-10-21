@@ -1,3 +1,4 @@
+import { transactionQueryBuilder } from '../../test/typeorm-query-builder';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { MedicineService } from './medicine.service';
 import { Medicine } from './entities/medicine.entity';
@@ -29,6 +30,8 @@ describe('facility catalogue ownership', () => {
     };
     foreignStock = false;
     const manager = {
+      createQueryBuilder: () => transactionQueryBuilder(async () => []),
+      query: jest.fn().mockResolvedValue([]),
       getRepository: (entity: unknown) =>
         entity === Medicine
           ? repo

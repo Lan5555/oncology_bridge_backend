@@ -1,3 +1,5 @@
+import { SELLING_UNITS } from '../inventory/selling-unit';
+import { listingExists } from './listing-exists';
 import {
   ForbiddenException,
   HttpException,
@@ -30,11 +32,12 @@ import {
   ListingUpload,
 } from './cloudinary-images.service';
 import { PaystackService, VerifiedPayment } from './paystack.service';
+import { MARKETPLACE_LIST_PERMISSION } from '../role/permission-keys';
 
 const VERIFIED = `(SELECT v.status FROM verification_applications v WHERE v.user_id=u.id ORDER BY v.submitted_at DESC,v.id DESC LIMIT 1)='VERIFIED'`;
 const SELLER = `h.status='ACTIVE' AND h.deleted_at IS NULL AND u.active=true AND u.verification_status='VERIFIED'
  AND u.hospital_id=h.id AND u.account_type='PHARMACY_STORE' AND ${VERIFIED}
- AND EXISTS (SELECT 1 FROM role_permissions rp WHERE rp.role_id=u.role_id AND rp.permission='marketplace.list')`;
+ AND EXISTS (SELECT 1 FROM role_permissions rp WHERE rp.role_id=u.role_id AND rp.permission='${MARKETPLACE_LIST_PERMISSION}')`;
 const FROM_LISTING = `FROM marketplace_listings l JOIN inventory i ON i.id=l.inventory_item_id
  JOIN medicines m ON m.id=i.medicine_id JOIN hospitals h ON h.id=l.facility_id JOIN users u ON u.id=l.creator_id`;
 const ELIGIBLE = `${SELLER} AND l.status='PUBLISHED' AND i.hospital_id=h.id AND i.status='AVAILABLE'
@@ -104,7 +107,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     const [user] = await manager.query<ActorRow[]>(
       `SELECT u.*,r.name role_name,h.status facility_status,h.deleted_at facility_deleted,
       ${VERIFIED} verified_record,
-      EXISTS(SELECT 1 FROM role_permissions rp WHERE rp.role_id=u.role_id AND rp.permission='marketplace.list') can_list
+      EXISTS(SELECT 1 FROM role_permissions rp WHERE rp.role_id=u.role_id AND rp.permission='${MARKETPLACE_LIST_PERMISSION}') can_list
       FROM users u JOIN roles r ON r.id=u.role_id JOIN hospitals h ON h.id=u.hospital_id WHERE u.id=$1`,
       [id],
     );
@@ -234,21 +237,29 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         'STOCK_UNAVAILABLE',
         'This batch is not eligible for sale.',
       );
-    if (!batch.selling_unit || batch.selling_unit !== dto.unit)
+    if (
+      !batch.selling_unit ||
+      !SELLING_UNITS.includes(
+        batch.selling_unit as (typeof SELLING_UNITS)[number],
+      ) ||
+      batch.selling_unit !== dto.unit
+    )
       this.fail(
         422,
         'INVALID_LISTING',
         'The unit must match the reviewed inventory selling unit.',
       );
-    if (
-      !dto.storage.trim() ||
-      !batch.storage_temperature?.trim() ||
-      dto.storage.trim() !== batch.storage_temperature.trim()
-    )
+    if (!batch.storage_temperature?.trim())
       this.fail(
         422,
         'INVALID_LISTING',
-        'Storage must match the approved medicine storage requirements.',
+        'The linked medicine has no approved storage requirement. Ask an authorized catalogue manager to record it before listing this batch.',
+      );
+    if (!dto.storage?.trim() || dto.storage !== batch.storage_temperature)
+      this.fail(
+        422,
+        'INVALID_LISTING',
+        'Storage must exactly match the approved medicine storage requirement. Refresh inventory and submit the linked medicine requirement unchanged.',
       );
     if (!dto.description.trim())
       this.fail(
@@ -267,11 +278,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         'STOCK_UNAVAILABLE',
         'Listing quantity exceeds unreserved stock.',
       );
-    const [existing] = await manager.query<OrderRow[]>(
-      'SELECT id FROM marketplace_listings WHERE inventory_item_id=$1',
-      [batch.id],
-    );
-    if (existing)
+    if (await listingExists(manager, batch.id))
       this.fail(
         409,
         'INVALID_LISTING',
@@ -309,13 +316,19 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
             price,
             Number(dto.availableQuantity),
             dto.description.trim(),
-            dto.storage.trim(),
+            batch.storage_temperature,
             batch.prescription_required || dto.prescriptionRequired === 'true',
           ],
         );
         for (const photo of photos) await this.attachImage(manager, id, photo);
         return ResponseHelper.Success('Listing submitted.', {
-          listing: { id, status: 'PUBLISHED' },
+          listing: {
+            id,
+            status: 'PUBLISHED',
+            unit: batch.selling_unit,
+            availableQuantity: Number(dto.availableQuantity),
+            unitPriceNaira: price / 100,
+          },
         });
       });
     } catch (error) {

@@ -14,7 +14,14 @@ import { RolePermission } from '../role/entities/role-permission.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, Role, AuditLog, VerificationApplication, FacilityMembershipRequest, RolePermission]),
+    TypeOrmModule.forFeature([
+      User,
+      Role,
+      AuditLog,
+      VerificationApplication,
+      FacilityMembershipRequest,
+      RolePermission,
+    ]),
     EncryptionModule,
     GuardsModule,
   ],

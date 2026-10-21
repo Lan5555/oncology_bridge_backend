@@ -16,6 +16,7 @@ import { StockAccessService } from './stock-access.service';
 import { InventoryManagementGuard } from './inventory-management.guard';
 import { OperationalReadGuard } from './operational-read.guard';
 import { FacilityLicenseReviewGuard } from './facility-license-review.guard';
+import { DashboardReadGuard } from './dashboard-read.guard';
 
 @Global()
 @Module({
@@ -27,6 +28,7 @@ import { FacilityLicenseReviewGuard } from './facility-license-review.guard';
   ],
   controllers: [GuardsController],
   providers: [
+    DashboardReadGuard,
     FacilityLicenseReviewGuard,
     OperationalReadGuard,
     GuardsService,
@@ -40,6 +42,7 @@ import { FacilityLicenseReviewGuard } from './facility-license-review.guard';
     InventoryManagementGuard,
   ],
   exports: [
+    DashboardReadGuard,
     FacilityLicenseReviewGuard,
     OperationalReadGuard,
     AuthGuard,

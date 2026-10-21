@@ -166,9 +166,13 @@ export class StorageUnitsService {
 
   private isNetworkAdmin(user: User) {
     const role = user.role?.name?.trim().toLowerCase();
-    return ['admin', 'superadmin', 'network admin', 'network_admin', 'network-admin'].includes(
-      role ?? '',
-    );
+    return [
+      'admin',
+      'superadmin',
+      'network admin',
+      'network_admin',
+      'network-admin',
+    ].includes(role ?? '');
   }
 
   private assertNetworkAdmin(user: User) {

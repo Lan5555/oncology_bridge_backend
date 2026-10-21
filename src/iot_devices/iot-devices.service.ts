@@ -135,7 +135,13 @@ export class IotDevicesService {
     const role = user?.role?.name.trim().toLowerCase();
     if (
       !user?.active ||
-      !['admin', 'superadmin', 'network admin', 'network_admin', 'network-admin'].includes(role ?? '')
+      ![
+        'admin',
+        'superadmin',
+        'network admin',
+        'network_admin',
+        'network-admin',
+      ].includes(role ?? '')
     )
       throw new ForbiddenException('Network Admin role required.');
   }

@@ -7,10 +7,15 @@ import {
   IsUUID,
   Min,
 } from 'class-validator';
+import { SELLING_UNITS } from '../selling-unit';
 
 export class CreateInventoryDto {
   @IsOptional()
-  @IsIn(['vial', 'pack', 'bottle', 'box'])
+  @IsIn(SELLING_UNITS)
+  unit?: string;
+
+  @IsOptional()
+  @IsIn(SELLING_UNITS)
   sellingUnit?: string;
 
   @IsOptional()

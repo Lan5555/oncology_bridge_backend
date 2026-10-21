@@ -20,8 +20,8 @@ export class RoleGuard implements CanActivate {
       user?.role === 'ADMIN' ||
       user?.role === 'FACILITY_ADMIN' ||
       user?.role === 'PHARMACIST' ||
-      user?.role === 'ONCOLOGIST'
-      || user?.role === 'SUPERADMIN'
+      user?.role === 'ONCOLOGIST' ||
+      user?.role === 'SUPERADMIN'
     ) {
       return true;
     }

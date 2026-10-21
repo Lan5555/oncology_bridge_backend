@@ -1,4 +1,5 @@
-export type Role = 'ADMIN' | 'FACILITY_ADMIN' | 'PHARMACIST' | 'ONCOLOGIST' | 'SUPERADMIN';
+export type Role =
+  'ADMIN' | 'FACILITY_ADMIN' | 'PHARMACIST' | 'ONCOLOGIST' | 'SUPERADMIN';
 export type JwtPayload = {
   id: number;
   email: string;

@@ -69,7 +69,15 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
     superToken: string,
     deniedToken: string;
   let failDatabase = false;
-  const actors = new Map<string, User>();
+  type TestActor = {
+    id: string;
+    active: boolean;
+    role: { id: number; name: string };
+    hospital: { id: string; status: string; ip_whitelist: string[] };
+    account_type: string;
+    verification_status: string;
+  };
+  const actors = new Map<string, TestActor>();
   const sql = async (text: string, args: unknown[] = []) =>
     (await pg.query(text, args)).rows as Record<string, unknown>[];
   beforeAll(async () => {
@@ -243,7 +251,7 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
         hospital: { id: id(1), status: 'ACTIVE', ip_whitelist: [] },
         account_type: 'PHARMACIST',
         verification_status: 'VERIFIED',
-      } as User);
+      });
     const getRepository = (entity: unknown) => {
       if (entity === User)
         return {
@@ -477,13 +485,91 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
       else process.env.ADMIN_MFA_REQUIRED = previous;
     }
   });
+  it('filters deleted-medicine inventory and totals by default while preserving authorized historical reads', async () => {
+    await sql('UPDATE medicines SET deleted_at=now() WHERE id=$1', [id(21)]);
+    try {
+      const getInventory = (query: string, token = facilityToken) =>
+        request(app.getHttpServer())
+          .get('/api/inventory' + query)
+          .set('Authorization', `Bearer ${token}`);
+      expect((await getInventory('').expect(200)).body.data).toMatchObject({
+        total: 0,
+        items: [],
+      });
+      const historical = await getInventory(
+        '?includeDeletedMedicines=true',
+      ).expect(200);
+      expect(historical.body.data).toMatchObject({
+        total: 1,
+        items: [
+          {
+            medicine: {
+              id: id(21),
+              active: false,
+              deleted_at: expect.any(String),
+            },
+            medicine_deleted: true,
+            medicine_active: false,
+          },
+        ],
+      });
+      const otherSession = await getInventory('', superToken).expect(200);
+      expect(
+        otherSession.body.data.items.some(
+          (row: any) => row.medicine?.id === id(21),
+        ),
+      ).toBe(false);
+      await getInventory(
+        '?includeDeletedMedicines=true&facilityId=' + id(2),
+      ).expect(403);
+      await getInventory('?includeDeletedMedicines=invalid').expect(400);
+    } finally {
+      await sql('UPDATE medicines SET deleted_at=NULL WHERE id=$1', [id(21)]);
+    }
+  });
+  it('includes approved storage text unchanged in the inventory HTTP response', async () => {
+    const approved = '  Store at 2?8?C.\nProtect from light.  ';
+    await sql('UPDATE medicines SET storage_temperature=$1 WHERE id=$2', [
+      approved,
+      id(21),
+    ]);
+    try {
+      const result = await request(app.getHttpServer())
+        .get('/api/inventory')
+        .set('Authorization', `Bearer ${facilityToken}`)
+        .expect(200);
+      expect(result.body.data.items[0].medicine.storage_temperature).toBe(
+        approved,
+      );
+    } finally {
+      await sql(
+        "UPDATE medicines SET storage_temperature='2-8 C' WHERE id=$1",
+        [id(21)],
+      );
+    }
+  });
+  it('caps catalogue page size and returns selectable fields and actual pagination metadata', async () => {
+    const result = await request(app.getHttpServer())
+      .get('/api/medicines?page=1&limit=1000')
+      .set('Authorization', `Bearer ${facilityToken}`)
+      .expect(200);
+    expect(result.body.data).toMatchObject({ page: 1, limit: 100, total: 1 });
+    expect(result.body.data.items[0]).toMatchObject({
+      id: id(21),
+      generic_name: 'Alpha',
+      brand_name: 'Alpha',
+      strength: '10mg',
+      dosage_form: 'vial',
+      gtin: 'gtin-1',
+    });
+  });
   it('rejects invalid pagination, makes missing lists explicit, and never reports an outage as empty success', async () => {
     await request(app.getHttpServer())
       .get('/api/inventory?page=0')
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(400);
     await request(app.getHttpServer())
-      .get('/api/inventory?limit=101')
+      .get('/api/inventory?limit=0')
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(400);
     failDatabase = true;

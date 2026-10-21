@@ -1,3 +1,4 @@
+import { SELLING_UNITS } from '../inventory/selling-unit';
 import {
   IsIn,
   IsInt,
@@ -25,7 +26,7 @@ export class CreateListingDto {
   @Matches(/^(?:0|[1-9]\d{0,10})(?:\.\d{1,2})?$/)
   unitPriceNaira!: string;
   @IsString() @Matches(/^[1-9]\d{0,8}$/) availableQuantity!: string;
-  @IsIn(['vial', 'pack', 'bottle', 'box']) unit!: string;
+  @IsIn(SELLING_UNITS) unit!: string;
   @IsString() @Length(1, 500) storage!: string;
   @IsString() @Length(1, 2000) description!: string;
   @IsIn(['true', 'false']) prescriptionRequired!: string;

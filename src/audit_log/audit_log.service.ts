@@ -38,7 +38,14 @@ export class AuditLogService {
     );
   }
   async findAll(
-    options: { type?: string; page?: number; limit?: number; actor?: string; from?: string; to?: string } = {},
+    options: {
+      type?: string;
+      page?: number;
+      limit?: number;
+      actor?: string;
+      from?: string;
+      to?: string;
+    } = {},
   ) {
     const page = Math.max(1, Number(options.page) || 1),
       limit = Math.min(200, Math.max(1, Number(options.limit) || 50));
@@ -47,15 +54,18 @@ export class AuditLogService {
       .leftJoinAndSelect('a.user', 'user')
       .orderBy('a.created_at', 'DESC');
     if (options.type) qb.andWhere('a.action = :type', { type: options.type });
-    if (options.actor) qb.andWhere('user.id = :actor', { actor: options.actor });
+    if (options.actor)
+      qb.andWhere('user.id = :actor', { actor: options.actor });
     if (options.from) {
       const from = new Date(options.from);
-      if (Number.isNaN(from.getTime())) throw new BadRequestException('Invalid from date');
+      if (Number.isNaN(from.getTime()))
+        throw new BadRequestException('Invalid from date');
       qb.andWhere('a.created_at >= :from', { from });
     }
     if (options.to) {
       const to = new Date(options.to);
-      if (Number.isNaN(to.getTime())) throw new BadRequestException('Invalid to date');
+      if (Number.isNaN(to.getTime()))
+        throw new BadRequestException('Invalid to date');
       qb.andWhere('a.created_at <= :to', { to });
     }
     const [rows, total] = await qb
@@ -85,7 +95,10 @@ export class AuditLogService {
     if (!row) throw new NotFoundException('Audit record not found');
     return ResponseHelper.Success('Audit record retrieved', row);
   }
-  async exportCsv(actorId: string, options: { type?: string; actor?: string; from?: string; to?: string } = {}) {
+  async exportCsv(
+    actorId: string,
+    options: { type?: string; actor?: string; from?: string; to?: string } = {},
+  ) {
     const result: any = await this.findAll({ ...options, limit: 200 });
     const rows = result.data?.items ?? [];
     const q = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
@@ -98,11 +111,16 @@ export class AuditLogService {
       ),
     ].join('\n');
     const actor = await this.users.findOneBy({ id: actorId });
-    if (actor) await this.audits.save(this.audits.create({
-      user: actor, action: 'AUDIT_EXPORTED',
-      description: `Audit CSV exported${options.type ? ` with action filter ${options.type}` : ''}`,
-      ip_address: 'admin-api', event_key: null,
-    }));
+    if (actor)
+      await this.audits.save(
+        this.audits.create({
+          user: actor,
+          action: 'AUDIT_EXPORTED',
+          description: `Audit CSV exported${options.type ? ` with action filter ${options.type}` : ''}`,
+          ip_address: 'admin-api',
+          event_key: null,
+        }),
+      );
     return ResponseHelper.Success('Audit export generated', { csv });
   }
   verifyChain() {

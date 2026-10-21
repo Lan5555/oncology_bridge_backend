@@ -35,3 +35,17 @@ Checkout idempotency is scoped to buyer and canonical payload. Initialization re
 Run `npm test -- --runInBand` and `npm run build`. Database tests execute the actual migration, queries and triggers against embedded PostgreSQL (PGlite). PGlite serializes transactions through one connection; run a staging check against multi-connection PostgreSQL for concurrent different keys, inventory updates, callbacks and webhook delivery. Tests mock Cloudinary and Paystack; finish acceptance with real image uploads and Paystack test payments using configured test credentials.
 
 Provider references: [Cloudinary upload API](https://cloudinary.com/documentation/image_upload_api_reference), [Sharp input validation](https://sharp.pixelplumbing.com/api-constructor/), [Paystack acceptance](https://paystack.com/docs/payments/accept-payments/), [verification](https://paystack.com/docs/payments/verify-payments/), and [webhooks](https://paystack.com/docs/payments/webhooks/).
+
+## Assigning the listing permission
+
+The final listing key is **marketplace.list**. It is separate from inventory.manage; there is no marketplace.listings.manage alias. The same key is exported from src/role/permission-keys.ts and used by both the assignable permission catalogue and marketplace seller checks.
+
+GET /api/roles/:roleId/permissions returns data.permissions (assigned keys) and data.availablePermissions (assignable keys), including marketplace.list and role.manage. If the permission is missing from Admin UI, inspect this response from the deployed API: the key was already present in the source catalogue before this change. Deploy the backend and update frontend permission labels/options to use availablePermissions if necessary.
+
+Active network admins require admin.access plus role.manage to view and replace role permissions; existing role.read/role.update behavior remains supported. Configured administrator MFA still applies. PUT accepts {"permissions":[...]} and **replaces the full role grant set**: fetch the current set and add/remove marketplace.list while preserving other intended keys.
+
+Assign only to the explicitly approved seller role. For deployment via SQL, database/grant-marketplace-list.sql accepts a required psql seller_role variable containing the exact existing role name. It preserves all other grants, is idempotent, and refuses network administrator roles. No broad default grant, guessed role assignment, or user role reassignment is performed by application startup. The deployment operator must identify the approved role; an account type such as PHARMACY_STORE is not necessarily its role name.
+
+Login returns data.user.permissions; refresh returns data.user.permissions and reissues token permission claims from current database grants. GET /api/me returns data.permissions. Refresh the session after assignment/revocation to update controls. The listing endpoint checks current database permissions immediately, independently of stale JWT claims.
+
+Frontend listing controls should check permissions.includes('marketplace.list') alongside PHARMACY_STORE seller eligibility. The key alone grants no cross-facility ownership rights. Verification approval, active membership/facility, PHARMACY_STORE account type, eligible unexpired stock, and ownership of the selected batch remain required. Network administrators do not gain an implicit seller bypass.

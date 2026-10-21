@@ -17,6 +17,7 @@ import { NetworkAdminGuard } from '../guards/network-admin.guard';
 import { RoleService } from './role.service';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
+import { SystemRolePermissionsGuard } from './system-role-permissions.guard';
 
 type AdminRequest = Request & { user: { id: string } };
 class RolePermissionsDto {
@@ -24,7 +25,7 @@ class RolePermissionsDto {
 }
 
 @Controller(['role', 'api/roles'])
-@UseGuards(AuthGuard, NetworkAdminGuard)
+@UseGuards(AuthGuard, NetworkAdminGuard, SystemRolePermissionsGuard)
 export class RoleController {
   constructor(private readonly roleService: RoleService) {}
 
@@ -56,7 +57,11 @@ export class RoleController {
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() updateRoleDto: UpdateRoleDto, @Req() req: AdminRequest) {
+  update(
+    @Param('id') id: string,
+    @Body() updateRoleDto: UpdateRoleDto,
+    @Req() req: AdminRequest,
+  ) {
     return this.roleService.update(+id, updateRoleDto, req.user.id);
   }
 

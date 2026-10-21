@@ -16,19 +16,23 @@ export class NetResponseFilter implements ExceptionFilter {
       exception && typeof exception === 'object' && 'code' in exception
         ? String((exception as { code?: unknown }).code)
         : '';
-    const status =
-      multerCode === 'LIMIT_FILE_SIZE'
+    const inactiveMedicine = this.isInactiveMedicineWrite(exception);
+    const status = inactiveMedicine
+      ? HttpStatus.CONFLICT
+      : multerCode === 'LIMIT_FILE_SIZE'
         ? HttpStatus.PAYLOAD_TOO_LARGE
         : this.isMalformedJson(exception)
           ? HttpStatus.BAD_REQUEST
           : exception instanceof HttpException
             ? exception.getStatus()
             : HttpStatus.INTERNAL_SERVER_ERROR;
-    const raw = this.isMalformedJson(exception)
-      ? 'Malformed JSON request body'
-      : exception instanceof HttpException
-        ? exception.getResponse()
-        : null;
+    const raw = inactiveMedicine
+      ? 'Deleted or missing medicine cannot be used for stock intake or transfers'
+      : this.isMalformedJson(exception)
+        ? 'Malformed JSON request body'
+        : exception instanceof HttpException
+          ? exception.getResponse()
+          : null;
     const message =
       typeof raw === 'string'
         ? raw
@@ -52,6 +56,18 @@ export class NetResponseFilter implements ExceptionFilter {
       message: Array.isArray(message) ? message.join('; ') : String(message),
       data,
     });
+  }
+
+  private isInactiveMedicineWrite(exception: unknown): boolean {
+    if (!exception || typeof exception !== 'object') return false;
+    const error = exception as {
+      constraint?: string;
+      driverError?: { constraint?: string };
+    };
+    return (
+      (error.constraint ?? error.driverError?.constraint) ===
+      'medicine_active_required'
+    );
   }
 
   private isMalformedJson(exception: unknown): boolean {

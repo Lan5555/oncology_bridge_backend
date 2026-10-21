@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 import { ScanLog } from './entities/scan_log.entity';
 import { Inventory } from '../inventory/entities/inventory.entity';
 import { Medicine } from '../medicine/entities/medicine.entity';
@@ -18,6 +18,7 @@ import { ResponseHelper } from '../helpers/response-helper';
 import { UpdateScanLogDto } from './dto/update-scan_log.dto';
 import { normalizeGs1Expiry, validateGtin } from './gs1-parser';
 import { StockAccessService } from '../guards/stock-access.service';
+import { reviewedSellingUnit } from '../inventory/selling-unit';
 
 export interface ScanActor {
   id: string;
@@ -66,6 +67,7 @@ export class ScanLogService {
       );
 
     const user = await this.stockAccess.assertManage(actor.id, dto.facilityId);
+    const sellingUnit = reviewedSellingUnit(dto);
 
     const existingRequest = await this.scans.findOne({
       where: { client_uuid: dto.clientUuid },
@@ -115,6 +117,9 @@ export class ScanLogService {
           hospital: { id: hospital.id },
           medicine: { id: medicine.id },
           batch_number: dto.lot.trim(),
+          selling_unit: sellingUnit ?? IsNull(),
+          expiry_date: new Date(`${expiry}T00:00:00.000Z`),
+          status: In(['AVAILABLE', 'NEAR_EXPIRY']),
         },
         relations: { hospital: true, medicine: true },
       });
@@ -130,6 +135,7 @@ export class ScanLogService {
           serial_number: dto.serial.trim(),
           expiry_date: new Date(`${expiry}T00:00:00.000Z`),
           quantity,
+          selling_unit: sellingUnit ?? null,
           status: 'AVAILABLE',
         });
       }
@@ -168,6 +174,7 @@ export class ScanLogService {
           gtin: dto.gtin,
           result,
           clientUuid: dto.clientUuid,
+          sellingUnit: item.selling_unit ?? null,
         }),
         ip_address: ip,
       }),
