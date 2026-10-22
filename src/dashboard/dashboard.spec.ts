@@ -45,7 +45,8 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
         batch_number text,expiry_date date,status text,created_at timestamptz DEFAULT CURRENT_TIMESTAMP);
       CREATE TABLE scan_logs(inventory_id uuid,result text,client_uuid uuid,action text,gtin text,batch_number text,serial_number text,expiry_date date);
       CREATE TABLE transfer_requests(id uuid PRIMARY KEY,from_hospital uuid,to_hospital uuid,status text,quantity int,created_at timestamptz DEFAULT now(),approved_at timestamptz,inventory_id uuid);
-      CREATE TABLE storage_units(id uuid PRIMARY KEY,facility_id uuid,last_seen_at timestamptz,offline_after_seconds int,operational_state text);
+      CREATE TABLE storage_units(id uuid PRIMARY KEY,facility_id uuid,last_seen_at timestamptz,offline_after_seconds int,operational_state text,target_min numeric,target_max numeric);
+      CREATE TABLE temperature_logs(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),unit_id uuid,temperature numeric,recorded_at timestamptz);
       CREATE TABLE cold_chain_events(unit_id uuid,state text);
     `);
     await pg.exec(
@@ -115,7 +116,7 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
             deleted_at: { type: 'timestamptz', nullable: true },
           },
         }),
-        new EntitySchema({
+        new EntitySchema<Inventory>({
           name: 'WatchInventory',
           tableName: 'inventory',
           columns: {
@@ -204,7 +205,7 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
         hospital: { id: id(1), status: 'ACTIVE' },
       });
     await pg.exec(
-      'TRUNCATE hospitals,medicines,inventory,scan_logs,transfer_requests,storage_units,cold_chain_events',
+      'TRUNCATE hospitals,medicines,inventory,scan_logs,transfer_requests,storage_units,cold_chain_events,temperature_logs',
     );
     for (const n of [1, 2]) {
       await sql("INSERT INTO hospitals VALUES ($1,'ACTIVE',NULL)", [id(n)]);
@@ -362,10 +363,15 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
     expect(
       (await get('charts')).body.data.redistributionEfficiency,
     ).toHaveLength(1);
-    await sql("INSERT INTO storage_units VALUES ($1,$2,now(),300,'ONLINE')", [
-      id(70),
-      id(1),
-    ]);
+    await sql(
+      "INSERT INTO storage_units VALUES ($1,$2,now(),300,'ONLINE',2,8)",
+      [id(70), id(1)],
+    );
+    expect((await get('summary')).body.data.chainIntegrityPct).toBeNull();
+    await sql(
+      'INSERT INTO temperature_logs(unit_id,temperature,recorded_at) VALUES ($1,4,now())',
+      [id(70)],
+    );
     expect((await get('summary')).body.data.chainIntegrityPct).toBe(100);
     await sql("INSERT INTO cold_chain_events VALUES ($1,'OPEN')", [id(70)]);
     expect((await get('summary')).body.data.chainIntegrityPct).toBe(0);
@@ -376,5 +382,31 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
     fail = true;
     expect((await get('summary')).status).toBe(500);
     expect((await get('charts')).status).toBe(500);
+  });
+  it('keeps missing percentages unavailable and preserves recorded zeros without a fabricated region', async () => {
+    await sql('DELETE FROM inventory WHERE hospital_id=$1', [id(1)]);
+    const response = await get('summary');
+    expect(response.body.data).toMatchObject({
+      network: { region: null },
+      totalVials: 0,
+      nodes: 1,
+      stockOutRiskPct: null,
+      chainIntegrityPct: null,
+    });
+  });
+  it('does not turn a missing recorded stock quantity into an aggregate zero', async () => {
+    await sql('UPDATE inventory SET quantity=NULL WHERE id=$1', [id(31)]);
+    expect((await get('summary')).body.data).toMatchObject({
+      totalVials: null,
+      gs1AuthenticatedVials: null,
+      stockOutRiskPct: null,
+      quantitiesByUnit: { vial: null },
+    });
+    await sql('UPDATE inventory SET quantity=0 WHERE id=$1', [id(31)]);
+    expect((await get('summary')).body.data).toMatchObject({
+      totalVials: 0,
+      gs1AuthenticatedVials: 0,
+      stockOutRiskPct: 100,
+    });
   });
 });

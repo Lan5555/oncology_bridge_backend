@@ -4,7 +4,11 @@ Admin operational list routes, read grants, pagination, privacy rules and the re
 
 Medicine marketplace deployment, Cloudinary configuration, Paystack setup, and validation are documented in [database/MARKETPLACE.md](database/MARKETPLACE.md). Apply its migration before starting this version of the API.
 
+Brevo email setup, event coverage, password recovery and queue operations are documented in [database/EMAIL.md](database/EMAIL.md). Apply [database/email-service.sql](database/email-service.sql) before deploying this version, and configure the server values in `.env.example` to enable delivery.
+
 ## Request conventions
+
+Explicit business input, null/zero semantics, cold-chain evidence and public-statistics definitions are documented in [database/BUSINESS-VALUES.md](database/BUSINESS-VALUES.md). Apply [database/business-values.sql](database/business-values.sql) before deploying this version.
 
 - Send and receive JSON. IDs are UUIDs except role IDs, which are integers.
 - Protected routes expect `Authorization: Bearer <token>`.
@@ -29,7 +33,7 @@ Example request helper:
 | `POST`  | `/auth/api/refresh`             | Public, refresh token required   | `{ "refreshToken": "..." }`; returns new `{ token, refreshToken, expiresIn }`.                                                                               |
 | `GET`   | `/auth/api/log-out/:id`         | Bearer; ID must match token user | Revokes that user's refresh session.                                                                                                                         |
 | `GET`   | `/auth/api/ping-server`         | Public                           | Health check.                                                                                                                                                |
-| `POST`  | `/auth/api/forgot-password`     | Public                           | `{ "email": "..." }`. Email delivery is not connected; in non-production the response may include `demoResetToken`.                                          |
+| `POST`  | `/auth/api/forgot-password`     | Public                           | `{ "email": "..." }`. Queues a Brevo reset link when configured; always acknowledges known/unknown accounts identically and never returns a token. |
 | `POST`  | `/auth/api/reset-password`      | Public                           | `{ "token": "...", "password": "at-least-8-chars" }`.                                                                                                        |
 | `GET`   | `/api/me`                       | Bearer                           | Current user.                                                                                                                                                |
 | `PATCH` | `/api/me`                       | Bearer                           | Update current user fields accepted by the user service.                                                                                                     |
@@ -65,7 +69,7 @@ Catalogue mutations accept `inventory.manage` or the corresponding `medicine.cre
 | `GET`  | `/api/dashboard/summary` | Network Admin (Role C) | Computed network, inventory, expiry, and transfer totals. Some UI metrics return `null` until their source integration/data exists.                                         |
 | `GET`  | `/api/dashboard/charts`  | Bearer | Chart series derived from scans, stock, and transfers.                                                                                                                      |
 | `GET`  | `/api/public/stats`      | Public | Aggregated public network figures.                                                                                                                                          |
-| `POST` | `/api/reports/export`    | Bearer | `{ "type": "CSV", "from": "2026-01-01", "to": "2026-12-31" }`. CSV is returned in JSON as `data.csv`; PDF/XLSX return a queued demo job because workers are not configured. |
+| `POST` | `/api/reports/export`    | Bearer + `report.export` | `{ "type": "CSV", "from": "2026-01-01", "to": "2026-12-31" }`. Real CSV/PDF/XLSX files return `data.fileName`, `mimeType`, and `contentBase64`; CSV also retains `data.csv`. Facility scope is derived from the session. |
 
 ### Inventory, stock search, expiry
 
@@ -122,6 +126,10 @@ Catalogue mutations accept `inventory.manage` or the corresponding `medicine.cre
 Recent scans are facility-scoped for ordinary users; Network Admin can see network-wide results. The API returns display-safe fields. Monthly totals are real counts and can be empty. `/api/gs1/lookup?gtin=...` is public and returns non-sensitive product identity; an unknown GTIN returns `data: null`.
 
 ### Transfers
+
+The named-batch redistribution contract, recipient eligibility, available quantities and required migration are documented in [database/REDISTRIBUTION-SELECTION.md](database/REDISTRIBUTION-SELECTION.md). Apply `database/redistribution-selection.sql` before deploying this version.
+
+The complete transfer list and `POST /api/transfers/:id/dispatch` / `deliver` custody actions also require `database/frontend-contract.sql`; see [FRONTEND-CONTRACT.md](database/FRONTEND-CONTRACT.md). Approval is not physical dispatch or receipt. Active-order timelines now contain recorded transfer timestamps only.
 
 | Method | Route                                         | Auth   | Payload / notes                                                                                                                                          |
 | ------ | --------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -190,9 +198,11 @@ Apply [`database/cold-chain-hardening.sql`](database/cold-chain-hardening.sql) a
 | `POST`  | `/api/research/inquiries`                             | Public               | `{ "name": "...", "organisation": "...", "email": "...", "message": "..." }`.                                   |
 | `GET`   | `/api/research/stats`                                 | Public               | Aggregated inquiry count.                                                                                       |
 
-External email delivery and CAPTCHA/rate limiting for public inquiry forms are not configured. Registration verification decisions update the applicant and facility, and persist an in-app notification transactionally. Registry lookups and outbound email delivery are not configured.
+Brevo delivers account, password-recovery and notification emails when configured; see [database/EMAIL.md](database/EMAIL.md). Registration verification decisions update the applicant and facility, and persist an in-app notification and email atomically. CAPTCHA/rate limiting and automatic email replies for public inquiry forms are not configured.
 
 ## Frontend mapping
+
+The managed choices, pharmacy directory, transfer custody workflow, and real report downloads require [database/frontend-contract.sql](database/frontend-contract.sql). Deployment order, option provisioning, permission grants, and API shapes are in [database/FRONTEND-CONTRACT.md](database/FRONTEND-CONTRACT.md).
 
 - Auth screens: `/auth/api/login`, `/auth/api/refresh`, `/hospital/api/register-facility`.
 - Dashboard: `/api/dashboard/summary`, `/api/dashboard/charts`, `/api/notifications`.

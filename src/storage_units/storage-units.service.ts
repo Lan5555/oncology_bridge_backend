@@ -13,6 +13,8 @@ import { TemperatureLog } from '../temperature_log/entities/temperature_log.enti
 import { CreateStorageUnitDto } from './dto/create-storage-unit.dto';
 import { UpdateStorageUnitDto } from './dto/update-storage-unit.dto';
 import { ResponseHelper } from '../helpers/response-helper';
+import { readingPresentation, recordedTimestamp } from './reading-presentation';
+import { recordedNumber } from '../helpers/business-values';
 
 @Injectable()
 export class StorageUnitsService {
@@ -50,7 +52,12 @@ export class StorageUnitsService {
     const latest = new Map<string, TemperatureLog>();
     for (const reading of readings) {
       const unitId = reading.unit?.id;
-      if (unitId && !latest.has(unitId)) latest.set(unitId, reading);
+      if (
+        unitId &&
+        recordedTimestamp(reading.recorded_at) &&
+        !latest.has(unitId)
+      )
+        latest.set(unitId, reading);
     }
     const facilityIds = [...new Set(units.map((unit) => unit.facility_id))];
     const facilities = await this.hospitals.findBy({ id: In(facilityIds) });
@@ -62,28 +69,25 @@ export class StorageUnitsService {
       'Storage units retrieved',
       units.map((unit) => {
         const reading = latest.get(unit.id);
-        const lastSeen = unit.last_seen_at?.getTime() ?? 0;
-        const offline =
-          !lastSeen || now - lastSeen > unit.offline_after_seconds * 1000;
-        const temp = reading ? Number(reading.temperature) : null;
-        const readingState = offline
-          ? 'OFFLINE'
-          : temp !== null &&
-              (temp < Number(unit.target_min) || temp > Number(unit.target_max))
-            ? 'BREACH'
-            : 'NOMINAL';
+        const presentation = readingPresentation(
+          {
+            temperature: reading?.temperature,
+            recordedAt: reading?.recorded_at,
+            targetMin: unit.target_min,
+            targetMax: unit.target_max,
+            lastSeenAt: unit.last_seen_at,
+            offlineAfterSeconds: unit.offline_after_seconds,
+            operationalState: unit.operational_state,
+          },
+          now,
+        );
         const facility = facilityMap.get(unit.facility_id);
         return {
           id: unit.id,
           label: unit.label,
           kind: unit.kind,
           facility: facility ? { id: facility.id, name: facility.name } : null,
-          targetMin: Number(unit.target_min),
-          targetMax: Number(unit.target_max),
-          currentC: temp,
-          currentReadingAt: reading?.recorded_at ?? null,
-          lastSeenAt: unit.last_seen_at,
-          readingState,
+          ...presentation,
           offlineAfterSeconds: unit.offline_after_seconds,
         };
       }),
@@ -93,7 +97,11 @@ export class StorageUnitsService {
   async create(actorId: string, data: CreateStorageUnitDto) {
     const actor = await this.actor(actorId);
     this.assertNetworkAdmin(actor);
-    if (Number(data.target_min) >= Number(data.target_max))
+    if (
+      recordedNumber(data.target_min) === null ||
+      recordedNumber(data.target_max) === null ||
+      Number(data.target_min) >= Number(data.target_max)
+    )
       throw new BadRequestException(
         'Storage-unit minimum must be lower than maximum.',
       );
@@ -105,7 +113,7 @@ export class StorageUnitsService {
       kind: data.kind,
       target_min: data.target_min,
       target_max: data.target_max,
-      offline_after_seconds: data.offline_after_seconds || 900,
+      offline_after_seconds: data.offline_after_seconds,
       operational_state: 'UNKNOWN',
       last_seen_at: null,
       device_key: null,
@@ -130,9 +138,14 @@ export class StorageUnitsService {
       offline_after_seconds,
     } = data;
     if (
-      target_min !== undefined &&
-      target_max !== undefined &&
-      target_min >= target_max
+      recordedNumber(
+        target_min !== undefined ? target_min : unit.target_min,
+      ) === null ||
+      recordedNumber(
+        target_max !== undefined ? target_max : unit.target_max,
+      ) === null ||
+      Number(target_min !== undefined ? target_min : unit.target_min) >=
+        Number(target_max !== undefined ? target_max : unit.target_max)
     )
       throw new BadRequestException(
         'Storage-unit minimum must be lower than maximum.',

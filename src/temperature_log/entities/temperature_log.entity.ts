@@ -4,7 +4,6 @@ import {
   Column,
   ManyToOne,
   JoinColumn,
-  CreateDateColumn,
 } from 'typeorm';
 import { TransferRequest } from '../../transfer_requests/entities/transfer_request.entity';
 import { StorageUnit } from '../../storage_units/entities/storage-unit.entity';
@@ -37,6 +36,6 @@ export class TemperatureLog {
   })
   temperature!: number;
 
-  @CreateDateColumn()
+  @Column({ type: 'timestamp' })
   recorded_at!: Date;
 }

@@ -934,12 +934,17 @@ export class HospitalService {
     const nodes = facilities.map((h) => ({
       id: h.id,
       name: h.name,
-      type: h.facility_type,
+      type: h.facility_type ?? null,
+      status: h.status ?? null,
       city: h.city,
       lat: h.latitude == null ? null : Number(h.latitude),
       lng: h.longitude == null ? null : Number(h.longitude),
-      online: h.status === 'ACTIVE',
-      alert: h.status !== 'ACTIVE',
+      online: Object.values(FacilityStatus).includes(h.status)
+        ? h.status === 'ACTIVE'
+        : null,
+      alert: Object.values(FacilityStatus).includes(h.status)
+        ? h.status !== 'ACTIVE'
+        : null,
     }));
     const links: { from: string; to: string; distanceKm: number }[] = [];
     for (let i = 0; i < nodes.length; i++)
@@ -1072,7 +1077,7 @@ export class HospitalService {
       const { details, status, ip_whitelist, ...facilityFields } =
         updateHospitalDto;
       Object.assign(hospital, facilityFields);
-      hospital.status = nextStatus as FacilityStatus;
+      hospital.status = nextStatus;
       if (ip_whitelist) hospital.ip_whitelist = ip_whitelist;
       if (details !== undefined) hospital.admin_note = details;
 

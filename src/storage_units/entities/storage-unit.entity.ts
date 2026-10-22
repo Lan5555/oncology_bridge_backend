@@ -11,9 +11,9 @@ export class StorageUnit {
   @Column('uuid') facility_id!: string;
   @Column() label!: string;
   @Column({ default: 'FRIDGE' }) kind!: string;
-  @Column('decimal', { precision: 4, scale: 2, default: 2 })
+  @Column('decimal', { precision: 4, scale: 2 })
   target_min!: number;
-  @Column('decimal', { precision: 4, scale: 2, default: 8 })
+  @Column('decimal', { precision: 4, scale: 2 })
   target_max!: number;
   // Kept nullable for legacy rows. Device credentials live in iot_devices and
   // are resolved from server-side secret configuration, never returned by API.

@@ -11,6 +11,8 @@ import { DashboardService } from './dashboard.service';
 import { AuthGuard } from '../guards/auth.guard';
 import { DashboardReadGuard } from '../guards/dashboard-read.guard';
 import type { DashboardRequest } from '../guards/dashboard-read.guard';
+import { ReportsService } from './reports.service';
+import { OperationalReadGuard } from '../guards/operational-read.guard';
 @Controller('api/dashboard')
 @UseGuards(AuthGuard, DashboardReadGuard)
 export class DashboardController {
@@ -35,11 +37,14 @@ export class PublicStatsController {
   }
 }
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, OperationalReadGuard)
 @Controller('api/reports')
 export class ReportsController {
-  constructor(private readonly dashboard: DashboardService) {}
-  @Post('export') export(@Body() body: any) {
-    return this.dashboard.exportReport(body);
+  constructor(private readonly reports: ReportsService) {}
+  @Post('export') @Header('Cache-Control', 'private, no-store') export(
+    @Body() body: { type?: unknown; from?: unknown; to?: unknown },
+    @Req() req: { user: { id: string } },
+  ) {
+    return this.reports.export(body, req.user.id);
   }
 }

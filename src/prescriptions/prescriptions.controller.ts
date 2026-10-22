@@ -11,6 +11,7 @@ import {
   Query,
   UseGuards,
   Req,
+  Header,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { AuthGuard } from '../guards/auth.guard';
@@ -26,26 +27,35 @@ export class PrescriptionsController {
     private readonly service: PrescriptionsService,
     private readonly reads: OperationalReadsService,
   ) {}
-  @Post() create(
+  @Post() @Header('Cache-Control', 'private, no-store') create(
     @Body() body: Partial<Prescription>,
     @Req() req: FacilityRequest,
   ) {
     return this.service.create(body, req.user?.id, req.user?.facilityId);
   }
-  @Get() findAll(
+  @Get('pharmacies') @Header('Cache-Control', 'private, no-store') pharmacies(
+    @Query() query: { page?: string; limit?: string },
+    @Req() req: FacilityRequest,
+  ) {
+    return this.service.pharmacies(req.user!.id, {
+      page: query.page === undefined ? 1 : Number(query.page),
+      limit: query.limit === undefined ? 100 : Number(query.limit),
+    });
+  }
+  @Get() @Header('Cache-Control', 'private, no-store') findAll(
     @Query() query: OperationalQueryDto,
     @Req() req: FacilityRequest,
   ) {
     return this.reads.list('prescriptions', req.user?.id, query);
   }
 
-  @Get(':id/events') events(
+  @Get(':id/events') @Header('Cache-Control', 'private, no-store') events(
     @Param('id') id: string,
     @Req() req: FacilityRequest,
   ) {
-    return this.service.eventsFor(id, req.user?.facilityId);
+    return this.service.eventsFor(id, req.user?.facilityId, req.user?.id);
   }
-  @Patch(':id') update(
+  @Patch(':id') @Header('Cache-Control', 'private, no-store') update(
     @Param('id') id: string,
     @Body() body: Partial<Prescription>,
     @Req() req: FacilityRequest,

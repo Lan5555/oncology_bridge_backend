@@ -61,6 +61,11 @@ const endpoints: [OperationalResource, string][] = [
   ['network', '/api/network'],
   ['research', '/api/research/inquiries'],
 ];
+// Transfers now return the complete matching list with custody actions; their
+// HTTP scoping and list contract are covered in redistribution-selection.spec.ts.
+const paginatedEndpoints = endpoints.filter(
+  ([resource]) => resource !== 'transfers',
+);
 
 describe('operational reads with real JWTs and PostgreSQL queries', () => {
   let pg: PGlite, app: INestApplication, reads: OperationalReadsService;
@@ -105,9 +110,9 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
       CREATE TABLE invoice_items(id uuid PRIMARY KEY,invoice_id uuid,description text,quantity int,unit_price_naira numeric);
       CREATE TABLE marketplace_orders(id uuid PRIMARY KEY,invoice_reference text,facility_id uuid,payment_status text,total_kobo bigint,
         payment_reference text,paid_at timestamptz,created_at timestamptz DEFAULT now(),buyer_id uuid,snapshot jsonb,quantity int,unit_price_kobo bigint,
-        authorization_url text);
+        authorization_url text,inventory_item_id uuid,reservation_state text,expires_at timestamptz);
       CREATE TABLE transfer_requests(id uuid PRIMARY KEY,from_hospital uuid,to_hospital uuid,medicine_id uuid,inventory_id uuid,quantity int,status text,
-        approved_at timestamptz,created_at timestamptz DEFAULT now());
+        approved_at timestamptz,created_at timestamptz DEFAULT now(),selling_unit text);
       CREATE TABLE scan_logs(id uuid PRIMARY KEY,inventory_id uuid,facility_id uuid,scanned_by uuid,gtin text,batch_number text,serial_number text,
         expiry_date date,action text,result text,created_at timestamptz DEFAULT now(),client_ts timestamptz,notes text);
       CREATE TABLE storage_units(id uuid PRIMARY KEY,facility_id uuid,label text,kind text,target_min numeric,target_max numeric,
@@ -346,7 +351,7 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
     await pg?.close();
   });
 
-  it.each(endpoints)(
+  it.each(paginatedEndpoints)(
     '%s returns network-wide records from the explicit admin bearer, ignoring a facility cookie',
     async (_resource, path) => {
       const response = await request(app.getHttpServer())
@@ -387,7 +392,7 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
         .expect(401);
     },
   );
-  it.each(endpoints)(
+  it.each(paginatedEndpoints)(
     '%s searches before stable pagination and returns filtered totals and empty states',
     async (_resource, path) => {
       const join = path.includes('?') ? '&' : '?';
@@ -417,7 +422,7 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
     },
   );
   it.each(
-    endpoints.filter(
+    paginatedEndpoints.filter(
       ([resource]) => !['marketplace', 'research'].includes(resource),
     ),
   )(
@@ -527,6 +532,65 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
       await sql('UPDATE medicines SET deleted_at=NULL WHERE id=$1', [id(21)]);
     }
   });
+  it('paginates named facility batches and reports stock available after transfer and checkout holds', async () => {
+    await sql(
+      `INSERT INTO inventory(id,hospital_id,medicine_id,batch_number,expiry_date,quantity,status,selling_unit,created_at)
+      VALUES ($1,$2,$3,'SECOND-BATCH',CURRENT_DATE+40,5,'AVAILABLE','box','2000-01-01')`,
+      [id(900), id(1), id(21)],
+    );
+    await sql(
+      `INSERT INTO marketplace_orders(id,inventory_item_id,quantity,reservation_state,expires_at)
+      VALUES ($1,$2,2,'RESERVED',now()+interval '15 minutes')`,
+      [id(901), id(31)],
+    );
+    try {
+      const first = await request(app.getHttpServer())
+        .get('/api/inventory?page=1&limit=1')
+        .set('Authorization', `Bearer ${facilityToken}`)
+        .expect(200);
+      expect(first.body.data).toMatchObject({
+        total: 2,
+        page: 1,
+        limit: 1,
+        items: [
+          {
+            id: id(31),
+            drug: 'Alpha',
+            batch_number: 'Alpha',
+            medicine: { generic_name: 'Alpha' },
+            quantity: 10,
+            availableQuantity: 7,
+            unit: 'vial',
+            facilityId: id(1),
+          },
+        ],
+      });
+      const second = await request(app.getHttpServer())
+        .get('/api/inventory?page=2&limit=1')
+        .set('Authorization', `Bearer ${facilityToken}`)
+        .expect(200);
+      expect(second.body.data).toMatchObject({
+        total: 2,
+        page: 2,
+        items: [
+          {
+            id: id(900),
+            batch_number: 'SECOND-BATCH',
+            quantity: 5,
+            availableQuantity: 5,
+            unit: 'box',
+          },
+        ],
+      });
+      await request(app.getHttpServer())
+        .get(`/api/inventory?facilityId=${id(2)}`)
+        .set('Authorization', `Bearer ${facilityToken}`)
+        .expect(403);
+    } finally {
+      await sql('DELETE FROM marketplace_orders WHERE id=$1', [id(901)]);
+      await sql('DELETE FROM inventory WHERE id=$1', [id(900)]);
+    }
+  });
   it('includes approved storage text unchanged in the inventory HTTP response', async () => {
     const approved = '  Store at 2?8?C.\nProtect from light.  ';
     await sql('UPDATE medicines SET storage_temperature=$1 WHERE id=$2', [
@@ -546,6 +610,93 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
         "UPDATE medicines SET storage_temperature='2-8 C' WHERE id=$1",
         [id(21)],
       );
+    }
+  });
+  it('uses recorded measurement time and configured storage limits without nominal defaults', async () => {
+    const unitId = id(91),
+      readingId = id(101);
+    const get = () =>
+      request(app.getHttpServer())
+        .get('/api/storage-units')
+        .set('Authorization', `Bearer ${facilityToken}`)
+        .expect(200);
+    try {
+      await sql(
+        'UPDATE storage_units SET last_seen_at=now(),target_min=10,target_max=20 WHERE id=$1',
+        [unitId],
+      );
+      await sql(
+        'UPDATE temperature_logs SET temperature=0,recorded_at=now() WHERE id=$1',
+        [readingId],
+      );
+      expect((await get()).body.data.items[0]).toMatchObject({
+        currentC: 0,
+        targetMin: 10,
+        targetMax: 20,
+        readingState: 'BREACH',
+      });
+      await sql('UPDATE storage_units SET target_min=0 WHERE id=$1', [unitId]);
+      expect((await get()).body.data.items[0]).toMatchObject({
+        currentC: 0,
+        readingState: 'NOMINAL',
+      });
+      await sql('UPDATE storage_units SET target_min=NULL WHERE id=$1', [
+        unitId,
+      ]);
+      expect((await get()).body.data.items[0]).toMatchObject({
+        targetMin: null,
+        targetMax: null,
+        readingState: 'UNKNOWN',
+      });
+      await sql('UPDATE storage_units SET target_min=0 WHERE id=$1', [unitId]);
+      await sql('UPDATE temperature_logs SET recorded_at=NULL WHERE id=$1', [
+        readingId,
+      ]);
+      expect((await get()).body.data.items[0]).toMatchObject({
+        currentC: null,
+        currentReadingAt: null,
+        readingState: 'UNKNOWN',
+      });
+      await sql(
+        "UPDATE storage_units SET last_seen_at=now()-interval '1 hour' WHERE id=$1",
+        [unitId],
+      );
+      expect((await get()).body.data.items[0].readingState).toBe('OFFLINE');
+    } finally {
+      await sql(
+        'UPDATE storage_units SET last_seen_at=NULL,target_min=2,target_max=8 WHERE id=$1',
+        [unitId],
+      );
+      await sql(
+        'UPDATE temperature_logs SET temperature=4,recorded_at=now() WHERE id=$1',
+        [readingId],
+      );
+    }
+  });
+  it('returns unknown availability for missing quantities while retaining genuine zero', async () => {
+    try {
+      await sql('UPDATE inventory SET quantity=NULL WHERE id=$1', [id(31)]);
+      let response = await request(app.getHttpServer())
+        .get('/api/inventory')
+        .set('Authorization', `Bearer ${facilityToken}`)
+        .expect(200);
+      expect(response.body.data.items[0]).toMatchObject({
+        quantity: null,
+        qty: null,
+        availableQuantity: null,
+      });
+      await sql('UPDATE inventory SET quantity=0 WHERE id=$1', [id(31)]);
+      response = await request(app.getHttpServer())
+        .get('/api/inventory')
+        .set('Authorization', `Bearer ${facilityToken}`)
+        .expect(200);
+      expect(response.body.data.items[0]).toMatchObject({
+        quantity: 0,
+        qty: 0,
+        availableQuantity: 0,
+      });
+    } finally {
+      await sql('UPDATE inventory SET quantity=10 WHERE id=$1', [id(31)]);
     }
   });
   it('caps catalogue page size and returns selectable fields and actual pagination metadata', async () => {

@@ -39,6 +39,18 @@ export class TransferRequest {
   @Column()
   quantity!: number;
 
+  @Column({ type: 'text', nullable: true })
+  selling_unit!: string | null;
+
+  @Column({ type: 'text', nullable: true }) batch_number!: string | null;
+  @Column({ type: 'date', nullable: true }) expiry_date!: string | null;
+  @Column({ type: 'timestamptz', nullable: true }) dispatched_at!: Date | null;
+  @Column({ type: 'timestamptz', nullable: true }) delivered_at!: Date | null;
+  @Column({ type: 'uuid', nullable: true }) dispatched_by!: string | null;
+  @Column({ type: 'uuid', nullable: true }) delivered_by!: string | null;
+  @Column({ type: 'uuid', nullable: true }) recipient_inventory_id!:
+    string | null;
+
   @Column({
     default: 'PENDING',
   })

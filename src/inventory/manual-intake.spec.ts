@@ -56,7 +56,7 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
   beforeEach(async () => {
     permissions = ['inventory.manage'];
     verified = true;
-    await pg.exec(`DROP TABLE IF EXISTS marketplace_listings,inventory,medicines,hospitals,audit_logs;
+    await pg.exec(`DROP TABLE IF EXISTS marketplace_listings,marketplace_orders,transfer_requests,inventory,medicines,hospitals,audit_logs;
       CREATE TABLE hospitals(id uuid PRIMARY KEY,name text,city text,state text,status text);
       CREATE TABLE medicines(id uuid PRIMARY KEY,gtin text,generic_name text,brand_name text,strength text,dosage_form text,manufacturer text,
         storage_temperature text,prescription_required boolean,catalog_facility_id uuid,created_at timestamptz,deleted_at timestamptz);
@@ -64,6 +64,8 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
         serial_number text,expiry_date date,quantity int,selling_unit text,status text,storage_unit_id uuid,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());
       CREATE TABLE audit_logs(description text);
       CREATE TABLE marketplace_listings(id uuid PRIMARY KEY,inventory_item_id uuid);
+      CREATE TABLE marketplace_orders(inventory_item_id uuid,quantity int,reservation_state text,expires_at timestamptz);
+      CREATE TABLE transfer_requests(id uuid,inventory_id uuid,quantity int,status text);
     `);
     await pg.query(
       "INSERT INTO hospitals VALUES ($1,'Alpha','Lagos','Lagos','ACTIVE')",

@@ -33,11 +33,11 @@ export class NetResponseFilter implements ExceptionFilter {
         : exception instanceof HttpException
           ? exception.getResponse()
           : null;
-    const message =
+    const message: unknown =
       typeof raw === 'string'
         ? raw
         : raw && typeof raw === 'object' && 'message' in raw
-          ? (raw as any).message
+          ? raw.message
           : exception instanceof Error
             ? exception.message
             : 'Unexpected server error';
@@ -47,14 +47,25 @@ export class NetResponseFilter implements ExceptionFilter {
         : raw && typeof raw === 'object'
           ? Object.fromEntries(
               Object.entries(raw).filter(
-                ([key]) => key !== 'message' && key !== 'statusCode',
+                ([key]) =>
+                  key !== 'message' && key !== 'statusCode' && key !== 'error',
               ),
             )
           : null;
     response.status(status).json({
       success: false,
       message: Array.isArray(message) ? message.join('; ') : String(message),
-      data,
+      data:
+        data &&
+        typeof data === 'object' &&
+        !Array.isArray(data) &&
+        !Object.keys(data).length
+          ? null
+          : data,
+      code:
+        raw && typeof raw === 'object' && 'code' in raw
+          ? String(raw.code)
+          : `HTTP_${status}`,
     });
   }
 

@@ -1,3 +1,9 @@
+import { transferAvailableQuantity } from '../transfer_requests/transfer-availability';
+import {
+  storageReadingStateSql,
+  validStorageLimits,
+} from '../storage_units/reading-presentation';
+
 export const READ_PERMISSIONS = {
   medicines: 'medicine.read',
   inventory: 'inventory.read',
@@ -38,7 +44,8 @@ const INVENTORY: ReadDefinition = {
     CASE WHEN m.id IS NULL THEN 'UNLINKED' ELSE 'LINKED' END "linkageStatus",i.batch_number "batchNumber",
     (m.deleted_at IS NOT NULL) medicine_deleted,(m.id IS NOT NULL AND m.deleted_at IS NULL) medicine_active,
     m.generic_name drug,m.brand_name brand,m.gtin,i.batch_number lot,i.serial_number serial,i.quantity qty,
-    i.expiry_date expiry,h.id "facilityId",h.name facility_name`,
+    i.expiry_date expiry,h.id "facilityId",h.name facility_name,
+    ${transferAvailableQuantity('i')} "availableQuantity"`,
   search:
     "concat_ws(' ',m.generic_name,m.brand_name,m.gtin,i.batch_number,i.serial_number,h.name,h.city,i.status)",
   scope: (p) => `i.hospital_id=${p}`,
@@ -107,7 +114,7 @@ export const READ_DEFINITIONS: Record<OperationalResource, ReadDefinition> = {
   },
   transfers: {
     from: 'transfer_requests t JOIN medicines m ON m.id=t.medicine_id JOIN hospitals h ON h.id=t.from_hospital JOIN hospitals recipient ON recipient.id=t.to_hospital',
-    select: `t.id,t.from_hospital,t.to_hospital,t.medicine_id,t.inventory_id,t.quantity,t.status,t.approved_at,t.created_at,
+    select: `t.id,t.from_hospital,t.to_hospital,t.medicine_id,t.inventory_id,t.quantity,t.selling_unit unit,t.status,t.approved_at,t.created_at,
       ${FACILITY} "fromHospital",jsonb_build_object('id',recipient.id,'name',recipient.name,'city',recipient.city,'status',recipient.status) "toHospital",${MEDICINE} medicine,
       jsonb_build_object('id',t.inventory_id) inventory`,
     search:
@@ -127,14 +134,16 @@ export const READ_DEFINITIONS: Record<OperationalResource, ReadDefinition> = {
   },
   storage: {
     from: `storage_units unit JOIN hospitals h ON h.id=unit.facility_id LEFT JOIN LATERAL
-      (SELECT r.temperature,r.recorded_at FROM temperature_logs r WHERE r.unit_id=unit.id ORDER BY r.recorded_at DESC,r.id DESC LIMIT 1) reading ON true`,
-    select: `unit.id,unit.facility_id,unit.label,unit.kind,unit.target_min,unit.target_max,unit.offline_after_seconds,
+      (SELECT r.temperature,r.recorded_at FROM temperature_logs r WHERE r.unit_id=unit.id AND r.recorded_at IS NOT NULL AND isfinite(r.recorded_at) ORDER BY r.recorded_at DESC,r.id DESC LIMIT 1) reading ON true`,
+    select: `unit.id,unit.facility_id,unit.label,unit.kind,
+      CASE WHEN ${validStorageLimits} THEN unit.target_min END target_min,
+      CASE WHEN ${validStorageLimits} THEN unit.target_max END target_max,unit.offline_after_seconds,
       unit.operational_state,unit.last_seen_at,unit.created_at,${FACILITY} facility,
-      unit.target_min::double precision "targetMin",unit.target_max::double precision "targetMax",
-      reading.temperature::double precision "currentC",reading.recorded_at "currentReadingAt",unit.last_seen_at "lastSeenAt",
+      CASE WHEN ${validStorageLimits} THEN unit.target_min::double precision END "targetMin",
+      CASE WHEN ${validStorageLimits} THEN unit.target_max::double precision END "targetMax",
+      CASE WHEN reading.recorded_at IS NOT NULL AND reading.temperature::text NOT IN ('NaN','Infinity','-Infinity') THEN reading.temperature::double precision END "currentC",reading.recorded_at "currentReadingAt",unit.last_seen_at "lastSeenAt",
       unit.offline_after_seconds "offlineAfterSeconds",
-      CASE WHEN unit.last_seen_at IS NULL OR unit.last_seen_at<now()-unit.offline_after_seconds*interval '1 second' THEN 'OFFLINE'
-        WHEN reading.temperature IS NULL THEN 'UNKNOWN' WHEN reading.temperature<unit.target_min OR reading.temperature>unit.target_max THEN 'EXCURSION' ELSE 'NOMINAL' END "readingState"`,
+      ${storageReadingStateSql} "readingState"`,
     search:
       "concat_ws(' ',unit.label,unit.kind,unit.operational_state,h.name,h.city)",
     scope: (p) => `unit.facility_id=${p}`,

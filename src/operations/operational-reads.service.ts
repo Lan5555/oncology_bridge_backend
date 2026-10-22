@@ -91,8 +91,14 @@ export class OperationalReadsService {
         !query.includeDeletedMedicines
       )
         where.push('m.deleted_at IS NULL');
-      if (!network) where.push(definition.scope(add(actor.hospital.id)));
-      else if (query.facilityId)
+      if (!network) {
+        const facilityScope = definition.scope(add(actor.hospital.id));
+        where.push(
+          resource === 'prescriptions'
+            ? `(${facilityScope} OR p.prescriber_id=${add(actor.id)})`
+            : facilityScope,
+        );
+      } else if (query.facilityId)
         where.push(definition.scope(add(query.facilityId)));
       if (query.q?.trim())
         where.push(

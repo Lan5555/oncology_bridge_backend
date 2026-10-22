@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { FormOptionsModule } from './form_options/form-options.module';
+import { EmailModule } from './email/email.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { UsersModule } from './users/users.module';
@@ -78,6 +80,8 @@ import { RegistryMetadataModule } from './registry_metadata/registry-metadata.mo
       },
     }),
     UsersModule,
+    FormOptionsModule,
+    EmailModule,
     RoleModule,
     HospitalModule,
     InventoryModule,

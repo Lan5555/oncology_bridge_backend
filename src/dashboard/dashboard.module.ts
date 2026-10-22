@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { DashboardService } from './dashboard.service';
+import { ReportsService } from './reports.service';
 import {
   DashboardController,
   PublicStatsController,
@@ -16,6 +17,6 @@ import { TransferRequest } from '../transfer_requests/entities/transfer_request.
     TypeOrmModule.forFeature([Hospital, Inventory, ScanLog, TransferRequest]),
   ],
   controllers: [DashboardController, PublicStatsController, ReportsController],
-  providers: [DashboardService],
+  providers: [DashboardService, ReportsService],
 })
 export class DashboardModule {}

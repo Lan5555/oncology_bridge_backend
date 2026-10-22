@@ -6,6 +6,7 @@ import { UsersService } from '../users/users.service';
 import { User } from '../users/entities/user.entity';
 import { UserSession } from '../user_sessions/entities/user_session.entity';
 import { EncryptionService } from '../encryption/encryption.service';
+import { EmailService } from '../email/email.service';
 
 describe('stock grants on session refresh', () => {
   it('reloads grants for both the returned user and newly issued tokens', async () => {
@@ -49,6 +50,7 @@ describe('stock grants on session refresh', () => {
       sessions as unknown as Repository<UserSession>,
       {} as EncryptionService,
       { authenticatedUser } as unknown as UsersService,
+      {} as EmailService,
     );
     const first = await service.refreshToken('old-token');
     expect(first.data).toMatchObject({
@@ -116,6 +118,7 @@ describe('stock grants on session refresh', () => {
       {
         authenticatedUser: async () => authenticatedUser,
       } as unknown as UsersService,
+      {} as EmailService,
     );
     const result = await auth.loginUser({
       email: 'seller@example.test',

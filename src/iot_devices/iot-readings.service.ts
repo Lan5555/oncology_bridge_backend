@@ -1,3 +1,5 @@
+import { isISO8601 } from 'class-validator';
+import { readingPresentation } from '../storage_units/reading-presentation';
 import {
   ConflictException,
   BadRequestException,
@@ -251,6 +253,8 @@ export class IotReadingsService implements OnModuleInit, OnModuleDestroy {
         );
       if (
         typeof row.recordedAt !== 'string' ||
+        !isISO8601(row.recordedAt, { strict: true, strictSeparator: true }) ||
+        !/(?:Z|[+-]\d{2}:\d{2})$/.test(row.recordedAt) ||
         Number.isNaN(Date.parse(row.recordedAt))
       )
         throw new BadRequestException(
@@ -354,6 +358,12 @@ export class IotReadingsService implements OnModuleInit, OnModuleDestroy {
         unit.operational_state = 'ONLINE';
         await unitRepo.save(unit);
 
+        const presentation = readingPresentation({
+          temperature: row.celsius,
+          recordedAt: row.recordedAt,
+          targetMin: unit.target_min,
+          targetMax: unit.target_max,
+        });
         const readingPayload = {
           readingId: saved.id,
           unitId: unit.id,
@@ -362,6 +372,9 @@ export class IotReadingsService implements OnModuleInit, OnModuleDestroy {
           celsius: row.celsius,
           recordedAt: row.recordedAt,
           sequence: row.sequence,
+          targetMin: presentation.targetMin,
+          targetMax: presentation.targetMax,
+          readingState: presentation.readingState,
         };
         const streamReading = await outboxRepo.save(
           outboxRepo.create({
@@ -372,9 +385,7 @@ export class IotReadingsService implements OnModuleInit, OnModuleDestroy {
         );
         events.push(this.toStreamEvent(streamReading));
 
-        const breached =
-          row.celsius < Number(unit.target_min) ||
-          row.celsius > Number(unit.target_max);
+        const breached = presentation.readingState === 'BREACH';
         if (breached) {
           const inventory = await inventoryRepo.find({
             where: { storage_unit_id: unit.id },
@@ -443,7 +454,7 @@ export class IotReadingsService implements OnModuleInit, OnModuleDestroy {
             );
             events.push(this.toStreamEvent(outbox));
           }
-        } else {
+        } else if (presentation.readingState === 'NOMINAL') {
           const openBreach = await eventRepo.findOne({
             where: { unit: { id: unit.id }, severity: 'BREACH', state: 'OPEN' },
           });
@@ -563,12 +574,15 @@ export class IotReadingsService implements OnModuleInit, OnModuleDestroy {
                   ? 'Cold-chain temperature breach'
                   : locked.event_type === 'resolved'
                     ? 'Cold-chain breach resolved'
-                    : String(locked.payload.status ?? 'OFFLINE') === 'OFFLINE'
+                    : locked.payload.status === 'OFFLINE'
                       ? 'Storage unit offline'
-                      : 'Storage unit online';
-              const message = String(
-                locked.payload.message ?? 'Storage-unit status changed.',
-              );
+                      : locked.payload.status === 'ONLINE'
+                        ? 'Storage unit online'
+                        : 'Storage unit status update';
+              const message =
+                typeof locked.payload.message === 'string'
+                  ? locked.payload.message
+                  : 'Storage-unit status changed.';
               const notifications = recipients.map((user) =>
                 manager.getRepository(Notification).create({
                   user,
@@ -730,7 +744,10 @@ export class IotReadingsService implements OnModuleInit, OnModuleDestroy {
       id: String(row.stream_id),
       type: row.event_type as ColdChainStreamEvent['type'],
       unitId: row.unit_id,
-      facilityId: String(row.payload.facilityId ?? ''),
+      facilityId:
+        typeof row.payload.facilityId === 'string'
+          ? row.payload.facilityId
+          : '',
       data: row.payload,
     };
   }

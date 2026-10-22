@@ -76,8 +76,16 @@ export class AuditLogService {
       items: rows.map((a) => ({
         id: a.id,
         at: a.created_at,
-        actorId: a.user?.id,
-        actor: a.user ? `${a.user.first_name} ${a.user.last_name}` : null,
+        actorId: a.user?.id ?? null,
+        actor: a.user
+          ? [a.user.first_name, a.user.last_name]
+              .filter(
+                (name: unknown): name is string =>
+                  typeof name === 'string' && !!name.trim(),
+              )
+              .map((name: string) => name.trim())
+              .join(' ') || null
+          : null,
         type: a.action,
         detail: a.description,
         ip: a.ip_address,

@@ -33,6 +33,8 @@ import {
 } from './cloudinary-images.service';
 import { PaystackService, VerifiedPayment } from './paystack.service';
 import { MARKETPLACE_LIST_PERMISSION } from '../role/permission-keys';
+import { businessLabel } from '../helpers/business-values';
+import { managedValue } from '../form_options/form-options.service';
 
 const VERIFIED = `(SELECT v.status FROM verification_applications v WHERE v.user_id=u.id ORDER BY v.submitted_at DESC,v.id DESC LIMIT 1)='VERIFIED'`;
 const SELLER = `h.status='ACTIVE' AND h.deleted_at IS NULL AND u.active=true AND u.verification_status='VERIFIED'
@@ -140,6 +142,8 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
 
   async browse(actorId: string, query: ListingQueryDto) {
     await this.actor(this.db.manager, actorId);
+    if (query.category?.trim())
+      await managedValue(this.db.manager, 'marketplace', query.category);
     const values: unknown[] = [];
     const add = (value: unknown) => {
       values.push(value);
@@ -154,7 +158,10 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       const p = add(`%${query.location}%`);
       where.push(`(h.city ILIKE ${p} OR h.name ILIKE ${p})`);
     }
-    if (query.category) where.push(`l.category=${add(query.category)}`);
+    if (query.category?.trim())
+      where.push(
+        `LOWER(l.category)=LOWER(${add(businessLabel(query.category, 'category', 100))})`,
+      );
     if (query.inStock === 'true') where.push(`${AVAILABLE}>0`);
     const base = `${FROM_LISTING} ${BALANCE} WHERE ${where.join(' AND ')}`;
     const sorts = {
@@ -292,9 +299,11 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     dto: CreateListingDto,
     files: ListingUpload[],
   ) {
+    const category = businessLabel(dto.category, 'category', 100);
     const price = priceToKobo(dto.unitPriceNaira);
     await this.db.transaction(async (m) => {
       await this.lock(m);
+      await managedValue(m, 'marketplace', category);
       await this.validateBatch(m, actorId, dto);
     });
     const photos = await this.images.upload(files);
@@ -302,6 +311,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       return await this.db.transaction(async (manager) => {
         await this.lock(manager);
         const batch = await this.validateBatch(manager, actorId, dto);
+        await managedValue(manager, 'marketplace', category);
         const id = randomUUID();
         await manager.query(
           `INSERT INTO marketplace_listings(id,inventory_item_id,facility_id,creator_id,category,
@@ -311,7 +321,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
             batch.id,
             batch.hospital_id,
             actorId,
-            dto.category,
+            category,
             dto.unit,
             price,
             Number(dto.availableQuantity),

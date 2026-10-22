@@ -12,6 +12,8 @@ import {
   Query,
   UseGuards,
   Req,
+  ParseUUIDPipe,
+  Header,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { AuthGuard } from '../guards/auth.guard';
@@ -36,7 +38,7 @@ export class TransferRequestsController {
   ) {
     return this.transferRequestsService.create(
       createTransferRequestDto,
-      req.user?.facilityId,
+      req.user!.id,
     );
   }
 
@@ -47,39 +49,42 @@ export class TransferRequestsController {
     return this.transferRequestsService.activeOrder(req.user?.facilityId);
   }
   @Get('suggest') suggest(
-    @Query('inventoryItemId') id: string,
+    @Query('inventoryItemId', ParseUUIDPipe) id: string,
     @Req() req: FacilityRequest,
   ) {
-    return this.transferRequestsService.suggest(id, req.user?.facilityId);
+    return this.transferRequestsService.suggest(id, req.user!.id);
   }
   @Post(':id/approve') approve(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Req() req: FacilityRequest,
   ) {
-    return this.transferRequestsService.decide(
-      id,
-      true,
-      undefined,
-      req.user?.facilityId,
-    );
+    return this.transferRequestsService.decide(id, true, req.user!.id);
   }
   @Post(':id/reject') reject(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Req() req: FacilityRequest,
   ) {
-    return this.transferRequestsService.decide(
-      id,
-      false,
-      undefined,
-      req.user?.facilityId,
-    );
+    return this.transferRequestsService.decide(id, false, req.user!.id);
   }
 
-  @Get() findAll(
+  @Get() @Header('Cache-Control', 'private, no-store') findAll(
     @Query() query: OperationalQueryDto,
     @Req() req: FacilityRequest,
   ) {
-    return this.reads.list('transfers', req.user?.id, query);
+    return this.transferRequestsService.listForActor(req.user!.id, query);
+  }
+
+  @Post(':id/dispatch') @Header('Cache-Control', 'private, no-store') dispatch(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: FacilityRequest,
+  ) {
+    return this.transferRequestsService.move(id, 'dispatch', req.user!.id);
+  }
+  @Post(':id/deliver') @Header('Cache-Control', 'private, no-store') deliver(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: FacilityRequest,
+  ) {
+    return this.transferRequestsService.move(id, 'deliver', req.user!.id);
   }
 
   @Get(':id')
@@ -96,12 +101,12 @@ export class TransferRequestsController {
     return this.transferRequestsService.update(
       id,
       updateTransferRequestDto,
-      req.user?.facilityId,
+      req.user!.id,
     );
   }
 
   @Delete(':id')
   remove(@Param('id') id: string, @Req() req: FacilityRequest) {
-    return this.transferRequestsService.remove(id, req.user?.facilityId);
+    return this.transferRequestsService.remove(id, req.user!.id);
   }
 }

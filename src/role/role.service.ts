@@ -46,6 +46,8 @@ const AVAILABLE_PERMISSIONS = [
   'settlement.read',
   'integration.read',
   'dashboard.read',
+  'report.export',
+  'settings.read',
   'admin.access',
   'integration.manage',
   'integration.sync',

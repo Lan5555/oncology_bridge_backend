@@ -9,6 +9,8 @@ import { ResponseHelper } from '../helpers/response-helper';
 import { User } from '../users/entities/user.entity';
 import { StorageUnit } from '../storage_units/entities/storage-unit.entity';
 import { TemperatureLog } from './entities/temperature_log.entity';
+import { recordedNumber } from '../helpers/business-values';
+import { recordedTimestamp } from '../storage_units/reading-presentation';
 
 @Injectable()
 export class TemperatureLogService {
@@ -71,12 +73,20 @@ export class TemperatureLogService {
       .take(10_000)
       .getMany();
 
-    const readings = rows.map((row) => ({
-      unitId: row.unit!.id,
-      unitLabel: row.unit!.label,
-      celsius: Number(row.temperature),
-      recordedAt: row.recorded_at.toISOString(),
-    }));
+    const readings = rows.flatMap((row) => {
+      const recordedAt = recordedTimestamp(row.recorded_at);
+      const celsius = recordedNumber(row.temperature);
+      return !recordedAt || celsius === null
+        ? []
+        : [
+            {
+              unitId: row.unit!.id,
+              unitLabel: row.unit!.label,
+              celsius,
+              recordedAt,
+            },
+          ];
+    });
     const timestamps = [...new Set(readings.map((row) => row.recordedAt))];
     const labels = timestamps.map((timestamp) => timestamp.slice(11, 16));
     const byUnit = new Map<string, Map<string, number>>();

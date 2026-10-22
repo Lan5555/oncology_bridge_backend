@@ -17,6 +17,8 @@ import { FacilityMembershipRequest } from '../hospital/entities/facility-members
 import { EncryptionService } from '../encryption/encryption.service';
 import { CleanResponse } from '../helpers/cleanerss';
 import { randomUUID } from 'crypto';
+import { EmailService } from '../email/email.service';
+import { PasswordReset } from '../email/entities/password-reset.entity';
 import {
   UnauthorizedException,
   BadRequestException,
@@ -27,10 +29,6 @@ import {
 @Injectable()
 export class AuthService {
   private readonly loginAttempts = new Map<string, number[]>();
-  private readonly passwordResets = new Map<
-    string,
-    { userId: string; expiresAt: number }
-  >();
   private jwtIssuerAudience() {
     return {
       ...(process.env.JWT_ISSUER ? { issuer: process.env.JWT_ISSUER } : {}),
@@ -47,6 +45,7 @@ export class AuthService {
     private readonly userSession: Repository<UserSession>,
     private encryptionService: EncryptionService,
     private readonly usersService: UsersService,
+    private readonly emails: EmailService,
   ) {}
 
   async loginUser(userDetails: AuthDto, ip = 'unknown'): CoreResponse {
@@ -258,45 +257,80 @@ export class AuthService {
 
   async forgotPassword(email: string) {
     if (!email) throw new BadRequestException('Email is required');
+    this.emails.assertConfigured();
+    // Validate configuration before looking up the account to keep errors uniform.
+    this.emails.passwordResetUrl('configuration-check');
     const user = await this.userRepository.findOneBy({
       email_hash: this.encryptionService.hash(email),
     });
-    if (!user)
-      return ResponseHelper.Success(
-        'If the account exists, reset instructions have been queued',
-        { emailQueued: true },
-      );
-    const resetToken = randomUUID();
-    this.passwordResets.set(resetToken, {
-      userId: user.id,
-      expiresAt: Date.now() + 15 * 60 * 1000,
-    });
+    if (user)
+      await this.userRepository.manager.transaction(async (manager) => {
+        // Serialize requests for this account and throttle reset emails across replicas.
+        const account = await manager.getRepository(User).findOne({
+          where: { id: user.id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!account) return;
+        const resets = manager.getRepository(PasswordReset);
+        const recent = await resets.findOne({
+          where: { user_id: user.id },
+          order: { created_at: 'DESC' },
+        });
+        if (recent && Date.now() - recent.created_at.getTime() < 60_000) return;
+        const resetToken = randomUUID();
+        const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+        await resets.delete({ user_id: user.id });
+        await resets.save({
+          token_hash: this.encryptionService.hash(resetToken),
+          user_id: user.id,
+          expires_at: expiresAt,
+        });
+        await this.emails.queuePasswordReset(
+          this.encryptionService.decrypt(account.email),
+          resetToken,
+          expiresAt,
+          manager,
+        );
+      });
     return ResponseHelper.Success(
-      'Password reset instructions queued by demo email adapter',
-      {
-        emailQueued: true,
-        ...(process.env.NODE_ENV === 'production'
-          ? {}
-          : { demoResetToken: resetToken }),
-      },
+      'If the account exists, reset instructions have been queued',
+      { emailQueued: true },
     );
   }
 
   async resetPassword(token: string, password: string) {
-    const reset = this.passwordResets.get(token);
-    if (!reset || reset.expiresAt < Date.now())
-      throw new BadRequestException('Invalid or expired reset token');
+    if (!token) throw new BadRequestException('Invalid or expired reset token');
     if (!password || password.length < 8)
       throw new BadRequestException('Password must be at least 8 characters');
-    const user = await this.userRepository.findOneBy({ id: reset.userId });
-    if (!user) throw new BadRequestException('Invalid or expired reset token');
-    user.password_hash = this.encryptionService.hashPassword(password);
-    await this.userRepository.save(user);
-    this.passwordResets.delete(token);
-    await this.userSession.update(
-      { user: { id: user.id } },
-      { refresh_token: '' },
-    );
+    const tokenHash = this.encryptionService.hash(token);
+    await this.userRepository.manager.transaction(async (manager) => {
+      const resets = manager.getRepository(PasswordReset);
+      const reset = await resets.findOneBy({ token_hash: tokenHash });
+      if (!reset)
+        throw new BadRequestException('Invalid or expired reset token');
+      // Lock accounts before tokens, matching the forgot-password lock order.
+      const user = await manager.getRepository(User).findOne({
+        where: { id: reset.user_id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      const current = await resets.findOneBy({ token_hash: tokenHash });
+      if (!user || !current || current.expires_at <= new Date())
+        throw new BadRequestException('Invalid or expired reset token');
+      user.password_hash = this.encryptionService.hashPassword(password);
+      await manager.getRepository(User).save(user);
+      await resets.delete({ user_id: user.id });
+      await manager
+        .getRepository(UserSession)
+        .update({ user: { id: user.id } }, { refresh_token: '' });
+      await this.emails.enqueue(
+        {
+          to: this.encryptionService.decrypt(user.email),
+          subject: 'Your OncoSourz password was changed',
+          text: 'Your password was reset and existing refresh sessions were revoked. If you did not make this change, contact your administrator immediately.',
+        },
+        manager,
+      );
+    });
     return ResponseHelper.Success(
       'Password reset; existing sessions revoked',
       null,

@@ -171,4 +171,21 @@ describe('IotReadingsService device security and batch validation', () => {
       }),
     ).toThrow(ConflictException);
   });
+  it.each([
+    undefined,
+    null,
+    '',
+    '2026-10-14',
+    '2026-10-14T12:30:00',
+    '2026-02-30T12:30:00Z',
+  ])(
+    'requires actual measurement timestamp with timezone: %s',
+    (recordedAt) => {
+      expect(() =>
+        (service as any).validateBatch(device, {
+          readings: [{ unitId, celsius: 0, recordedAt, sequence: 1 }],
+        }),
+      ).toThrow('valid ISO timestamp');
+    },
+  );
 });

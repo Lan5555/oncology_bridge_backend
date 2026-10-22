@@ -67,6 +67,8 @@ describe('marketplace PostgreSQL behavior', () => {
 
   beforeAll(async () => {
     pg = new PGlite();
+    await pg.exec(`CREATE TABLE form_options(context text,value text,label text,active boolean DEFAULT true);
+      INSERT INTO form_options(context,value) VALUES ('marketplace','Biologics'),('marketplace','Other'),('marketplace','Radiopharmaceuticals'),('marketplace','Different category');`);
     await pg.exec(`CREATE TABLE roles(id int PRIMARY KEY,name text);
       CREATE TABLE hospitals(id uuid PRIMARY KEY,name text,city text,status text,deleted_at timestamptz,state text);
       CREATE TABLE users(id uuid PRIMARY KEY,role_id int,hospital_id uuid,email text,active boolean,account_type text,verification_status text);
@@ -78,6 +80,20 @@ describe('marketplace PostgreSQL behavior', () => {
     await pg.exec(
       readFileSync(resolve(process.cwd(), 'database/marketplace.sql'), 'utf8'),
     );
+    await pg.exec(`CREATE TABLE storage_units(target_min numeric DEFAULT 2,target_max numeric DEFAULT 8);
+      CREATE TABLE temperature_logs(recorded_at timestamptz DEFAULT now());`);
+    await pg.exec(
+      readFileSync(
+        resolve(process.cwd(), 'database/business-values.sql'),
+        'utf8',
+      ),
+    );
+    await pg.exec(
+      readFileSync(
+        resolve(process.cwd(), 'database/business-values.sql'),
+        'utf8',
+      ),
+    );
     await pg.exec(
       readFileSync(
         resolve(process.cwd(), 'database/inventory-access.sql'),
@@ -85,7 +101,7 @@ describe('marketplace PostgreSQL behavior', () => {
       ),
     );
     await pg.exec(
-      'CREATE TABLE transfer_requests(id uuid PRIMARY KEY,medicine_id uuid,inventory_id uuid,status text); CREATE TABLE audit_logs(action text,description text);',
+      'CREATE TABLE transfer_requests(id uuid PRIMARY KEY,medicine_id uuid,inventory_id uuid,status text,quantity int DEFAULT 0); CREATE TABLE audit_logs(action text,description text);',
     );
     await pg.exec(
       readFileSync(
@@ -400,7 +416,7 @@ describe('marketplace PostgreSQL behavior', () => {
     const pending = await checkout(listingId, 1, randomUUID());
     const pendingReference = (pending.data as any).reference;
     await query(
-      "INSERT INTO transfer_requests VALUES ($1,$2,$3,'PENDING_APPROVAL')",
+      "INSERT INTO transfer_requests(id,medicine_id,inventory_id,status) VALUES ($1,$2,$3,'PENDING_APPROVAL')",
       [randomUUID(), medicine, stock],
     );
     let failAudit = true;
@@ -988,6 +1004,43 @@ describe('marketplace PostgreSQL behavior', () => {
         })
       ).data,
     ).toMatchObject({ total: 2, items: [{ id: first }] });
+  });
+  it('persists and searches an explicit category outside the former database enum', async () => {
+    const listingId = await listing({ category: '  Radiopharmaceuticals  ' });
+    expect(
+      (
+        await query('SELECT category FROM marketplace_listings WHERE id=$1', [
+          listingId,
+        ])
+      )[0].category,
+    ).toBe('Radiopharmaceuticals');
+    expect(
+      (
+        await service.browse(buyer, {
+          page: 1,
+          limit: 12,
+          category: 'Radiopharmaceuticals',
+        })
+      ).data,
+    ).toMatchObject({ total: 1, items: [{ id: listingId }] });
+    expect(
+      (
+        await service.browse(buyer, {
+          page: 1,
+          limit: 12,
+          category: 'Different category',
+        })
+      ).data,
+    ).toMatchObject({ total: 0, items: [] });
+    await expect(listing({ category: ' ' })).rejects.toThrow('category');
+  });
+  it('rejects withdrawn managed categories before upload and on search', async () => {
+    await query("UPDATE form_options SET active=false WHERE value='Biologics'");
+    await expect(listing()).rejects.toMatchObject({ status: 422 });
+    expect(images.upload).not.toHaveBeenCalled();
+    await expect(
+      service.browse(buyer, { page: 1, limit: 12, category: 'Biologics' }),
+    ).rejects.toMatchObject({ status: 422 });
   });
 });
 

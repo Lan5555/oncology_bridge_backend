@@ -1,3 +1,4 @@
+/* eslint-disable no-control-regex -- Business labels must reject control characters. */
 import { SELLING_UNITS } from '../inventory/selling-unit';
 import {
   IsIn,
@@ -11,17 +12,19 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 
-export const CATEGORIES = [
-  'Biologics',
-  'Chemotherapy',
-  'Supportive care',
-  'Other',
-];
 export class CreateListingDto {
   @IsUUID() inventoryItemId!: string;
-  @IsIn(CATEGORIES) category!: string;
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().normalize('NFC') : value,
+  )
+  @IsString()
+  @Length(1, 100, { message: 'category must contain 1 to 100 characters' })
+  @Matches(/^[^\u0000-\u001f\u007f]+$/, {
+    message: 'category cannot contain control characters',
+  })
+  category!: string;
   @IsString()
   @Matches(/^(?:0|[1-9]\d{0,10})(?:\.\d{1,2})?$/)
   unitPriceNaira!: string;
@@ -34,7 +37,16 @@ export class CreateListingDto {
 export class ListingQueryDto {
   @IsOptional() @IsString() @MaxLength(200) q?: string;
   @IsOptional() @IsString() @MaxLength(200) location?: string;
-  @IsOptional() @IsIn(['', ...CATEGORIES]) category?: string;
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().normalize('NFC') : value,
+  )
+  @IsString()
+  @MaxLength(100, { message: 'category cannot exceed 100 characters' })
+  @Matches(/^[^\u0000-\u001f\u007f]*$/, {
+    message: 'category cannot contain control characters',
+  })
+  category?: string;
   @IsOptional()
   @IsIn(['newest', 'price_asc', 'price_desc', 'expiry_asc'])
   sort?: string;

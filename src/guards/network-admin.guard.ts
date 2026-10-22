@@ -77,6 +77,7 @@ export class NetworkAdminGuard implements CanActivate {
 
   private requiredPermission(method: string, path: string): string {
     const p = path.toLowerCase();
+    if (p.startsWith('/api/reports')) return 'report.export';
     if (
       method === 'PUT' &&
       /^\/(?:api\/roles|role)\/[^/]+\/permissions\/?$/.test(p)
