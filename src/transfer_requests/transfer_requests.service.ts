@@ -108,24 +108,13 @@ export class TransferRequestsService {
       );
   }
 
-  private recipientDistance(
-    donor: Hospital,
-    recipient: Hospital,
-  ): number | null {
-    if (
-      donor.id === recipient.id ||
-      recipient.status !== FacilityStatus.ACTIVE ||
-      recipient.deleted_at ||
-      !recipient.name?.trim()
-    )
-      return null;
-    const distance = this.distanceKm(
-      donor.latitude,
-      donor.longitude,
-      recipient.latitude,
-      recipient.longitude,
+  private isEligibleRecipient(donor: Hospital, recipient: Hospital): boolean {
+    return (
+      donor.id !== recipient.id &&
+      recipient.status === FacilityStatus.ACTIVE &&
+      !recipient.deleted_at &&
+      !!recipient.name?.trim()
     );
-    return distance !== null && distance <= 80 ? distance : null;
   }
 
   private async available(
@@ -169,10 +158,7 @@ export class TransferRequestsService {
         where: { id: dto.recipientFacilityId },
         lock: { mode: 'pessimistic_read' },
       });
-      if (
-        !recipient ||
-        this.recipientDistance(item.hospital, recipient) === null
-      )
+      if (!recipient || !this.isEligibleRecipient(item.hospital, recipient))
         throw new BadRequestException(
           'Recipient is not eligible for this stock batch',
         );
@@ -290,10 +276,7 @@ export class TransferRequestsService {
           where: { id: row.toHospital.id },
           lock: { mode: 'pessimistic_read' },
         });
-        if (
-          !recipient ||
-          this.recipientDistance(item.hospital, recipient) === null
-        )
+        if (!recipient || !this.isEligibleRecipient(item.hospital, recipient))
           throw new BadRequestException(
             'Recipient is no longer eligible for this stock batch',
           );
@@ -549,10 +532,7 @@ export class TransferRequestsService {
         where: { id: row.toHospital.id },
         lock: { mode: 'pessimistic_write' },
       });
-      if (
-        !recipient ||
-        this.recipientDistance(item.hospital, recipient) === null
-      )
+      if (!recipient || !this.isEligibleRecipient(item.hospital, recipient))
         contractError(
           409,
           'RECIPIENT_UNAVAILABLE',
@@ -693,10 +673,7 @@ export class TransferRequestsService {
         where: { id: row.toHospital.id },
         lock: { mode: 'pessimistic_read' },
       });
-      if (
-        !recipient ||
-        this.recipientDistance(item.hospital, recipient) === null
-      )
+      if (!recipient || !this.isEligibleRecipient(item.hospital, recipient))
         throw new BadRequestException('Recipient is no longer eligible');
       if (
         item.hospital.id !== row.fromHospital.id ||
@@ -823,53 +800,20 @@ export class TransferRequestsService {
         .getRepository(Hospital)
         .find({ where: { status: FacilityStatus.ACTIVE } });
       const suggestions = facilities
-        .flatMap((facility) => {
-          const distanceKm = this.recipientDistance(item.hospital, facility);
-          return distanceKm === null
-            ? []
-            : [
-                {
-                  id: facility.id,
-                  facilityId: facility.id,
-                  name: facility.name,
-                  city: facility.city,
-                  distanceKm,
-                },
-              ];
-        })
+        .filter((facility) => this.isEligibleRecipient(item.hospital, facility))
+        .map((facility) => ({
+          id: facility.id,
+          facilityId: facility.id,
+          name: facility.name,
+          city: facility.city,
+        }))
         .sort(
-          (a, b) => a.distanceKm - b.distanceKm || a.id.localeCompare(b.id),
+          (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
         );
       return ResponseHelper.Success(
         'Recipient suggestions retrieved',
         suggestions,
       );
     });
-  }
-  private distanceKm(
-    lat1?: number,
-    lon1?: number,
-    lat2?: number,
-    lon2?: number,
-  ): number | null {
-    if (lat1 == null || lon1 == null || lat2 == null || lon2 == null)
-      return null;
-    const coordinates = [lat1, lon1, lat2, lon2].map(Number);
-    if (
-      coordinates.some((n) => !Number.isFinite(n)) ||
-      Math.abs(coordinates[0]) > 90 ||
-      Math.abs(coordinates[2]) > 90 ||
-      Math.abs(coordinates[1]) > 180 ||
-      Math.abs(coordinates[3]) > 180
-    )
-      return null;
-    const rad = (n: number) => (Number(n) * Math.PI) / 180;
-    const dLat = rad(lat2 - lat1),
-      dLon = rad(lon2 - lon1);
-    const a =
-      Math.sin(dLat / 2) ** 2 +
-      Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLon / 2) ** 2;
-    const bounded = Math.min(1, Math.max(0, a));
-    return 6371 * 2 * Math.atan2(Math.sqrt(bounded), Math.sqrt(1 - bounded));
   }
 }

@@ -298,16 +298,42 @@ describe('redistribution admission using real repositories and PostgreSQL storag
 
   it('returns named, eligible recipients only and supports an empty result', async () => {
     const result = await service.suggest(id(20), id(10));
-    expect(result.data).toHaveLength(1);
-    expect(result.data?.[0]).toMatchObject({
+    expect(result.data?.map((facility) => facility.id)).toEqual([
+      id(3),
+      id(2),
+      id(6),
+    ]);
+    expect(result.data?.[1]).toMatchObject({
       id: id(2),
       facilityId: id(2),
       name: 'Nearby',
       city: 'Ikeja',
     });
-    await pg.query('UPDATE hospitals SET latitude=NULL WHERE id=$1', [id(2)]);
+    await pg.query("UPDATE hospitals SET status='SUSPENDED' WHERE id<>$1", [
+      id(1),
+    ]);
     expect((await service.suggest(id(20), id(10))).data).toEqual([]);
   });
+
+  it.each([3, 6])(
+    'suggests and admits recipient %s regardless of distance or missing coordinates',
+    async (recipient) => {
+      await pg.query(
+        'UPDATE hospitals SET latitude=NULL,longitude=NULL WHERE id=$1',
+        [id(1)],
+      );
+      expect((await service.suggest(id(20), id(10))).data).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: id(recipient) }),
+        ]),
+      );
+      await service.create(
+        { ...request(), recipientFacilityId: id(recipient) },
+        id(10),
+      );
+      expect(await count()).toBe(1);
+    },
+  );
 
   it('checks current grants and ownership for suggestions and creation', async () => {
     await expect(service.suggest(id(20), id(11))).rejects.toMatchObject({
@@ -329,7 +355,7 @@ describe('redistribution admission using real repositories and PostgreSQL storag
     expect(await count()).toBe(0);
   });
 
-  it.each([1, 3, 4, 5, 6, 99])(
+  it.each([1, 4, 5, 99])(
     'rejects an ineligible recipient %s even if supplied directly',
     async (recipient) => {
       await expect(
@@ -511,7 +537,9 @@ describe('redistribution admission using real repositories and PostgreSQL storag
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
     expect((suggestions.body as { data: unknown }).data).toMatchObject([
+      { id: id(3), name: 'Far away' },
       { id: id(2), name: 'Nearby' },
+      { id: id(6), name: 'Unlocated' },
     ]);
     await requestHttp(server)
       .post('/api/transfers')
