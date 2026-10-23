@@ -60,6 +60,6 @@ export class PrescriptionsController {
     @Body() body: Partial<Prescription>,
     @Req() req: FacilityRequest,
   ) {
-    return this.service.update(id, body, req.user?.facilityId);
+    return this.service.update(id, body, req.user?.facilityId, req.user?.id);
   }
 }

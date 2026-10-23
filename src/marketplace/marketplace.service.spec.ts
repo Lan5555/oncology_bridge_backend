@@ -19,6 +19,21 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { MarketplaceService, priceToKobo } from './marketplace.service';
+import { OrderTrackingService } from '../orders/order-tracking.service';
+import { OrdersService } from '../orders/orders.service';
+import { OrderQueryDto } from '../orders/orders.dto';
+import { EmailService } from '../email/email.service';
+import { Test } from '@nestjs/testing';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { JwtModule, JwtService } from '@nestjs/jwt';
+import request from 'supertest';
+import {
+  BuyerOrdersController,
+  AdminOrdersController,
+} from '../orders/orders.controller';
+import { AuthGuard } from '../guards/auth.guard';
+import { NetworkAdminGuard } from '../guards/network-admin.guard';
+import { NetResponseFilter } from '../helpers/net-response.filter';
 import { CloudinaryImagesService } from './cloudinary-images.service';
 import { PaystackService } from './paystack.service';
 import { EncryptionService } from '../encryption/encryption.service';
@@ -51,6 +66,10 @@ const input: CreateListingDto = {
 describe('marketplace PostgreSQL behavior', () => {
   let pg: PGlite;
   let service: MarketplaceService;
+  let orders: OrdersService;
+  let enqueue: jest.Mock;
+  let app: INestApplication;
+  let jwt: JwtService;
   let images: {
     upload: jest.Mock;
     cleanup: jest.Mock;
@@ -101,7 +120,10 @@ describe('marketplace PostgreSQL behavior', () => {
       ),
     );
     await pg.exec(
-      'CREATE TABLE transfer_requests(id uuid PRIMARY KEY,medicine_id uuid,inventory_id uuid,status text,quantity int DEFAULT 0); CREATE TABLE audit_logs(action text,description text);',
+      `CREATE TABLE transfer_requests(id uuid PRIMARY KEY,medicine_id uuid,inventory_id uuid,status text,quantity int DEFAULT 0);
+       CREATE TABLE audit_logs(id uuid,user_id uuid,action text,description text,ip_address text,event_key uuid,object_type text,object_id uuid,before_status text,after_status text,created_at timestamptz DEFAULT now());
+       CREATE TABLE test_email_outbox(payload jsonb);
+       ALTER TABLE users ADD COLUMN first_name text DEFAULT 'Buyer', ADD COLUMN last_name text DEFAULT 'Name';`,
     );
     await pg.exec(
       readFileSync(
@@ -109,7 +131,46 @@ describe('marketplace PostgreSQL behavior', () => {
         'utf8',
       ),
     );
+    await pg.exec(
+      readFileSync(
+        resolve(process.cwd(), 'database/purchase-orders.sql'),
+        'utf8',
+      ),
+    );
     const db = {
+      getRepository: (entity: unknown) => {
+        if (entity === User)
+          return {
+            findOne: async ({ where }: { where: { id: string } }) => {
+              const [row] = await query(
+                `SELECT u.*,r.name role_name,h.status facility_status,h.deleted_at FROM users u JOIN roles r ON r.id=u.role_id LEFT JOIN hospitals h ON h.id=u.hospital_id WHERE u.id=$1`,
+                [where.id],
+              );
+              return row
+                ? {
+                    ...row,
+                    role: { id: row.role_id, name: row.role_name },
+                    hospital: row.hospital_id
+                      ? {
+                          id: row.hospital_id,
+                          status: row.facility_status,
+                          deleted_at: row.deleted_at,
+                          ip_whitelist: [],
+                        }
+                      : null,
+                  }
+                : null;
+            },
+          };
+        if (entity === RolePermission)
+          return {
+            findBy: async ({ role_id }: { role_id: number }) =>
+              query('SELECT * FROM role_permissions WHERE role_id=$1', [
+                role_id,
+              ]),
+          };
+        throw new Error('Unexpected repository');
+      },
       manager: { query },
       query,
       transaction: async (isolationOrCallback: any, callback?: any) =>
@@ -136,20 +197,53 @@ describe('marketplace PostgreSQL behavior', () => {
       assertConfigured: jest.fn(),
       authenticateWebhook: jest.fn(),
     };
+    enqueue = jest.fn(async (message, manager) => {
+      await manager.query('INSERT INTO test_email_outbox VALUES ($1)', [
+        message,
+      ]);
+    });
+    const tracking = new OrderTrackingService(
+      { enabled: () => true, enqueue } as unknown as EmailService,
+      { decrypt: () => 'buyer@example.test' } as unknown as EncryptionService,
+    );
+    orders = new OrdersService(db as unknown as DataSource, tracking);
     service = new MarketplaceService(
       db as unknown as DataSource,
       images as unknown as CloudinaryImagesService,
       paystack as unknown as PaystackService,
       { decrypt: () => 'buyer@example.test' } as unknown as EncryptionService,
       new ConfigService({ MARKETPLACE_RESERVATION_MINUTES: '15' }),
+      tracking,
     );
+    const module = await Test.createTestingModule({
+      imports: [JwtModule.register({ secret: 'orders-test-only' })],
+      controllers: [BuyerOrdersController, AdminOrdersController],
+      providers: [
+        AuthGuard,
+        NetworkAdminGuard,
+        { provide: DataSource, useValue: db },
+        { provide: OrdersService, useValue: orders },
+      ],
+    }).compile();
+    jwt = module.get(JwtService);
+    app = module.createNestApplication();
+    app.useGlobalPipes(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    );
+    app.useGlobalFilters(new NetResponseFilter());
+    await app.init();
   });
   afterAll(async () => {
+    await app?.close();
     await pg?.close();
   });
   beforeEach(async () => {
     jest.clearAllMocks();
-    await pg.exec(`TRUNCATE audit_logs,transfer_requests,marketplace_orders,marketplace_listing_images,marketplace_image_uploads,marketplace_listings,
+    await pg.exec(`TRUNCATE test_email_outbox,audit_logs,transfer_requests,marketplace_orders,marketplace_listing_images,marketplace_image_uploads,marketplace_listings,
       prescriptions,verification_applications,role_permissions,inventory,medicines,users,hospitals,roles CASCADE;`);
     await query("INSERT INTO roles VALUES (1,'PHARMACIST'),(2,'DOCTOR')");
     await query(
@@ -157,7 +251,7 @@ describe('marketplace PostgreSQL behavior', () => {
       [facility, buyerFacility],
     );
     await query(
-      `INSERT INTO users VALUES ($1,1,$4,'encrypted',true,'PHARMACY_STORE','VERIFIED'),
+      `INSERT INTO users(id,role_id,hospital_id,email,active,account_type,verification_status) VALUES ($1,1,$4,'encrypted',true,'PHARMACY_STORE','VERIFIED'),
       ($2,2,$5,'encrypted',true,'DOCTOR','VERIFIED'),($3,2,$5,'encrypted',true,'DOCTOR','VERIFIED')`,
       [seller, buyer, other, facility, buyerFacility],
     );
@@ -226,6 +320,462 @@ describe('marketplace PostgreSQL behavior', () => {
   ) {
     return service.checkout(buyer, key, { listingId, quantity, ...extra });
   }
+
+  async function admin(manage = true) {
+    await query("INSERT INTO roles VALUES (3,'ADMIN')");
+    await query('UPDATE users SET role_id=3 WHERE id=$1', [other]);
+    await query(
+      "INSERT INTO role_permissions VALUES (3,'admin.access'),(3,'order.read')",
+    );
+    if (manage)
+      await query("INSERT INTO role_permissions VALUES (3,'order.manage')");
+  }
+  const token = (id: string) =>
+    jwt.sign({ id, mfa: true }, { expiresIn: '1h' });
+
+  it('serves persisted buyer orders and prevents cross-buyer ID and query access over HTTP', async () => {
+    const result = await checkout(await listing());
+    const id = result.data!.orderId;
+    const own = await request(app.getHttpServer())
+      .get('/api/orders')
+      .auth(token(buyer), { type: 'bearer' })
+      .expect(200);
+    expect(own.body.data).toMatchObject({
+      items: [
+        {
+          id,
+          reference: result.data!.orderReference,
+          status: 'PENDING_PAYMENT',
+          paymentStatus: 'PENDING',
+          currency: 'NGN',
+          totalMinor: 250050,
+          itemCount: 1,
+          buyer: { name: 'Buyer Name', facilityName: 'Buyer clinic' },
+          seller: { name: 'Seller pharmacy' },
+        },
+      ],
+      pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+    });
+    await request(app.getHttpServer())
+      .get(`/api/orders/${id}`)
+      .auth(token(other), { type: 'bearer' })
+      .expect(404);
+    await request(app.getHttpServer())
+      .get(`/api/orders?buyerId=${buyer}`)
+      .auth(token(other), { type: 'bearer' })
+      .expect(400);
+    const empty = await request(app.getHttpServer())
+      .get('/api/orders')
+      .auth(token(other), { type: 'bearer' })
+      .expect(200);
+    expect(empty.body.data).toEqual({
+      items: [],
+      pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+    });
+    const detail = await request(app.getHttpServer())
+      .get(`/api/orders/${id}`)
+      .auth(token(buyer), { type: 'bearer' })
+      .expect(200);
+    expect(detail.body.data).toMatchObject({
+      version: 1,
+      allowedTransitions: [],
+      delivery: null,
+      subtotalMinor: 250050,
+      deliveryFeeMinor: 0,
+      items: [
+        {
+          name: 'Medicine alpha',
+          strength: '10mg',
+          quantity: 2,
+          unit: 'vial',
+          unitPriceMinor: 125025,
+          totalMinor: 250050,
+        },
+      ],
+    });
+    expect(JSON.stringify(detail.body)).not.toMatch(
+      /encrypted|prescriptionId|payload_hash|authorization_url/,
+    );
+    await request(app.getHttpServer()).get('/api/orders').expect(401);
+    await request(app.getHttpServer())
+      .get('/api/orders')
+      .auth('bad-token', { type: 'bearer' })
+      .expect(401);
+  });
+
+  it('combines authorized filters, searches snapshots, and counts before paginating', async () => {
+    const listingId = await listing();
+    const a = await checkout(listingId, 1),
+      b = await checkout(listingId, 2);
+    await service.reconcile(a.data!.reference);
+    const confirmed = await orders.list(buyer, {
+      ...new OrderQueryDto(),
+      status: 'CONFIRMED',
+      paymentStatus: 'PAID',
+      q: 'alpha',
+    });
+    expect(confirmed.data).toMatchObject({
+      items: [{ id: a.data!.orderId }],
+      pagination: { total: 1, totalPages: 1 },
+    });
+    expect(
+      (
+        await orders.list(buyer, {
+          ...new OrderQueryDto(),
+          q: 'alpha',
+          page: 2,
+          limit: 1,
+        })
+      ).data,
+    ).toMatchObject({
+      items: expect.any(Array),
+      pagination: { total: 2, totalPages: 2 },
+    });
+    expect(
+      (await orders.list(other, new OrderQueryDto())).data?.pagination.total,
+    ).toBe(0);
+    await admin();
+    expect(
+      (
+        await orders.list(
+          other,
+          { ...new OrderQueryDto(), q: 'Buyer clinic' },
+          true,
+        )
+      ).data?.pagination.total,
+    ).toBe(2);
+    expect(
+      (
+        await orders.list(buyer, {
+          ...new OrderQueryDto(),
+          q: b.data!.orderReference,
+        })
+      ).data?.pagination.total,
+    ).toBe(1);
+    expect(
+      (await orders.list(buyer, { ...new OrderQueryDto(), q: '%' })).data
+        ?.pagination.total,
+    ).toBe(0);
+    await request(app.getHttpServer())
+      .get('/api/orders?limit=101')
+      .auth(token(buyer), { type: 'bearer' })
+      .expect(400);
+    await request(app.getHttpServer())
+      .get('/api/orders?status=BOGUS')
+      .auth(token(buyer), { type: 'bearer' })
+      .expect(400);
+  });
+
+  it('enforces admin read/manage grants, versions, paid eligibility and forward fulfillment over HTTP', async () => {
+    const result = await checkout(await listing());
+    const id = result.data!.orderId,
+      url = `/admin/api/orders/${id}`;
+    await request(app.getHttpServer())
+      .get(url)
+      .auth(token(buyer), { type: 'bearer' })
+      .expect(403);
+    await admin(false);
+    await request(app.getHttpServer())
+      .patch(`${url}/fulfillment`)
+      .auth(token(other), { type: 'bearer' })
+      .send({ status: 'PROCESSING', expectedVersion: 1, note: 'Processing' })
+      .expect(403);
+    await query("INSERT INTO role_permissions VALUES (3,'order.manage')");
+    await request(app.getHttpServer())
+      .patch(`${url}/fulfillment`)
+      .auth(token(other), { type: 'bearer' })
+      .send({ status: 'PROCESSING', expectedVersion: 1, note: 'Processing' })
+      .expect(409);
+    await service.reconcile(result.data!.reference);
+    expect(
+      (await orders.detail(other, id, true)).data?.allowedTransitions,
+    ).toEqual(['PROCESSING']);
+    await query(
+      "DELETE FROM role_permissions WHERE role_id=3 AND permission='order.manage'",
+    );
+    expect(
+      (await orders.detail(other, id, true)).data?.allowedTransitions,
+    ).toEqual([]);
+    await query("INSERT INTO role_permissions VALUES (3,'order.manage')");
+    const initial = await request(app.getHttpServer())
+      .get(url)
+      .auth(token(other), { type: 'bearer' })
+      .expect(200);
+    expect(initial.body.data.allowedTransitions).toEqual(['PROCESSING']);
+    let version = initial.body.data.version;
+    const patch = (body: object) =>
+      request(app.getHttpServer())
+        .patch(`${url}/fulfillment`)
+        .auth(token(other), { type: 'bearer' })
+        .send(body);
+    for (const body of [
+      { status: 'PROCESSING', expectedVersion: version, note: '  ' },
+      {
+        status: 'PROCESSING',
+        expectedVersion: version,
+        note: 'OK',
+        paymentStatus: 'PAID',
+      },
+      {
+        status: 'PROCESSING',
+        expectedVersion: version,
+        note: 'OK',
+        carrier: 'Bad field',
+      },
+      { status: 'SHIPPED', expectedVersion: version, note: 'Shipped' },
+    ])
+      await patch(body).expect(400);
+    await patch({
+      status: 'CANCELLED',
+      expectedVersion: version,
+      note: 'Cancel',
+    }).expect(409);
+    const processing = await patch({
+      status: 'PROCESSING',
+      expectedVersion: version,
+      note: ' Preparing your order. ',
+    }).expect(200);
+    expect(processing.body.data.timeline.at(-1).message).toBe(
+      'Preparing your order.',
+    );
+    await patch({
+      status: 'PROCESSING',
+      expectedVersion: version,
+      note: 'Duplicate',
+    }).expect(409);
+    version = processing.body.data.version;
+    const shipped = await patch({
+      status: 'SHIPPED',
+      expectedVersion: version,
+      note: 'Dispatched.',
+      carrier: 'Actual carrier',
+      trackingNumber: 'TRACK-1',
+    }).expect(200);
+    expect(shipped.body.data.delivery).toMatchObject({
+      carrier: 'Actual carrier',
+      trackingNumber: 'TRACK-1',
+      deliveredAt: null,
+    });
+    const delivered = await patch({
+      status: 'DELIVERED',
+      expectedVersion: shipped.body.data.version,
+      note: 'Delivered.',
+    }).expect(200);
+    expect(delivered.body.data).toMatchObject({
+      status: 'DELIVERED',
+      paymentStatus: 'PAID',
+      allowedTransitions: [],
+      delivery: { deliveredAt: expect.any(String) },
+    });
+    await patch({
+      status: 'PROCESSING',
+      expectedVersion: delivered.body.data.version,
+      note: 'Backward',
+    }).expect(409);
+    expect(await query('SELECT * FROM test_email_outbox')).toHaveLength(3);
+    expect(
+      await query('SELECT * FROM purchase_order_events WHERE order_id=$1', [
+        id,
+      ]),
+    ).toHaveLength(6);
+    await query(
+      "DELETE FROM role_permissions WHERE role_id=3 AND permission='order.manage'",
+    );
+    expect(
+      (await orders.detail(other, id, true)).data?.allowedTransitions,
+    ).toEqual([]);
+    await query(
+      "DELETE FROM role_permissions WHERE role_id=3 AND permission='order.read'",
+    );
+    await request(app.getHttpServer())
+      .get(url)
+      .auth(token(other), { type: 'bearer' })
+      .expect(403);
+  });
+
+  it('deduplicates payment timeline and email and blocks fulfillment of late paid released stock', async () => {
+    const a = await checkout(await listing());
+    await service.reconcile(a.data!.reference);
+    await service.reconcile(a.data!.reference);
+    expect(await query('SELECT * FROM test_email_outbox')).toHaveLength(1);
+    expect(await query('SELECT * FROM purchase_order_events')).toHaveLength(3);
+    expect((await query('SELECT quantity FROM inventory'))[0].quantity).toBe(8);
+    await admin();
+    const b = await checkout(
+      (await query('SELECT id FROM marketplace_listings'))[0].id,
+    );
+    await query(
+      "UPDATE marketplace_orders SET expires_at=now()-interval '1 minute' WHERE id=$1",
+      [b.data!.orderId],
+    );
+    await service.maintenance();
+    const late = await orders.detail(other, b.data!.orderId, true);
+    expect(late.data).toMatchObject({
+      status: 'CANCELLED',
+      paymentStatus: 'PAID',
+      allowedTransitions: [],
+    });
+    await expect(
+      orders.fulfill(
+        other,
+        b.data!.orderId,
+        {
+          status: 'PROCESSING',
+          expectedVersion: late.data!.version,
+          note: 'No',
+        },
+        'test',
+      ),
+    ).rejects.toMatchObject({ status: 409 });
+    expect((await query('SELECT quantity FROM inventory'))[0].quantity).toBe(8);
+  });
+
+  it('rolls back fulfillment, timeline and audit if email enqueue fails', async () => {
+    const result = await checkout(await listing());
+    await service.reconcile(result.data!.reference);
+    await admin();
+    const initial = (await orders.detail(other, result.data!.orderId, true))
+      .data!;
+    const processing = (
+      await orders.fulfill(
+        other,
+        initial.id,
+        {
+          status: 'PROCESSING',
+          expectedVersion: initial.version,
+          note: 'Preparing.',
+        },
+        'test',
+      )
+    ).data!;
+    enqueue.mockRejectedValueOnce(new Error('Outbox persistence unavailable'));
+    await expect(
+      orders.fulfill(
+        other,
+        initial.id,
+        {
+          status: 'SHIPPED',
+          expectedVersion: processing.version,
+          note: 'Dispatched.',
+          carrier: 'Carrier',
+          trackingNumber: 'T1',
+        },
+        'test',
+      ),
+    ).rejects.toThrow();
+    const after = (await orders.detail(other, initial.id, true)).data!;
+    expect(after).toMatchObject({
+      status: 'PROCESSING',
+      version: processing.version,
+      delivery: null,
+    });
+    expect(after.timeline).toHaveLength(4);
+    expect(await query('SELECT * FROM audit_logs')).toHaveLength(4);
+  });
+
+  it('protects persisted checkout money and append-only customer history', async () => {
+    await checkout(await listing());
+    await expect(
+      query('UPDATE marketplace_orders SET total_kobo=1'),
+    ).rejects.toThrow();
+    await expect(
+      query('UPDATE marketplace_orders SET snapshot=$1', [{ name: 'Changed' }]),
+    ).rejects.toThrow();
+    await expect(
+      query("UPDATE purchase_order_events SET message='Changed'"),
+    ).rejects.toThrow();
+    await expect(query('DELETE FROM purchase_order_events')).rejects.toThrow();
+  });
+
+  it('rejects facility admins with network order grants and returns 404 for absent admin orders', async () => {
+    const result = await checkout(await listing());
+    await admin();
+    await query("UPDATE roles SET name='FACILITY_ADMIN' WHERE id=3");
+    await request(app.getHttpServer())
+      .get(`/admin/api/orders/${result.data!.orderId}`)
+      .auth(token(other), { type: 'bearer' })
+      .expect(403);
+    await query("UPDATE roles SET name='ADMIN' WHERE id=3");
+    await request(app.getHttpServer())
+      .get(`/admin/api/orders/${randomUUID()}`)
+      .auth(token(other), { type: 'bearer' })
+      .expect(404);
+  });
+
+  it('serializes competing fulfillment updates so exactly one version and timeline change commits', async () => {
+    const result = await checkout(await listing());
+    await service.reconcile(result.data!.reference);
+    await admin();
+    const detail = (await orders.detail(other, result.data!.orderId, true))
+      .data!;
+    const changes = await Promise.allSettled(
+      [1, 2].map(() =>
+        orders.fulfill(
+          other,
+          detail.id,
+          {
+            status: 'PROCESSING',
+            expectedVersion: detail.version,
+            note: 'Preparing.',
+          },
+          'test',
+        ),
+      ),
+    );
+    expect(changes.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
+    const failed = changes.find(
+      (x) => x.status === 'rejected',
+    ) as PromiseRejectedResult;
+    expect(failed.reason).toMatchObject({ status: 409 });
+    expect((await orders.detail(other, detail.id, true)).data).toMatchObject({
+      version: detail.version + 1,
+      timeline: expect.arrayContaining([
+        {
+          id: expect.any(String),
+          status: 'PROCESSING',
+          message: 'Preparing.',
+          occurredAt: expect.any(String),
+        },
+      ]),
+    });
+    expect(
+      await query('SELECT * FROM purchase_order_events WHERE status=$1', [
+        'PROCESSING',
+      ]),
+    ).toHaveLength(1);
+  });
+
+  it('keeps payment failure independent from fulfillment and does not downgrade a recorded failure', async () => {
+    const result = await checkout(await listing());
+    paystack.verify.mockResolvedValueOnce({
+      status: 'failed',
+      reference: result.data!.reference,
+      currency: 'NGN',
+      amount: 250050,
+    });
+    await service.reconcile(result.data!.reference);
+    expect(
+      (await orders.detail(buyer, result.data!.orderId)).data,
+    ).toMatchObject({
+      status: 'CANCELLED',
+      paymentStatus: 'FAILED',
+      allowedTransitions: [],
+    });
+    paystack.verify.mockResolvedValueOnce({
+      status: 'pending',
+      reference: result.data!.reference,
+      currency: 'NGN',
+      amount: 250050,
+    });
+    await service.reconcile(result.data!.reference);
+    expect(
+      (await orders.detail(buyer, result.data!.orderId)).data?.paymentStatus,
+    ).toBe('FAILED');
+    expect(await query('SELECT * FROM test_email_outbox')).toHaveLength(0);
+    expect((await query('SELECT quantity FROM inventory'))[0].quantity).toBe(
+      10,
+    );
+  });
 
   it('publishes photos, numeric NGN and a verified seller with filtered pagination', async () => {
     const id = await listing();
@@ -448,10 +998,10 @@ describe('marketplace PostgreSQL behavior', () => {
                 return {
                   save: async (row: any) => {
                     if (failAudit) throw new Error('Audit unavailable');
-                    return run('INSERT INTO audit_logs VALUES ($1,$2)', [
-                      row.action,
-                      row.description,
-                    ]);
+                    return run(
+                      'INSERT INTO audit_logs(action,description) VALUES ($1,$2)',
+                      [row.action, row.description],
+                    );
                   },
                 };
               throw new Error('Unexpected entity');
@@ -797,28 +1347,33 @@ describe('marketplace PostgreSQL behavior', () => {
       expect.stringMatching(/^OB-/),
     );
   });
-  it('enforces prescription access, matching medicine, approval, and remaining quantities', async () => {
-    await query('UPDATE medicines SET prescription_required=true WHERE id=$1', [
-      medicine,
-    ]);
-    const id = await listing();
-    await expect(checkout(id)).rejects.toMatchObject({ status: 422 });
-    await query(
-      "INSERT INTO prescriptions VALUES ($1,$2,$3,$4,3,'Pending','Waiting')",
-      [prescription, buyer, buyerFacility, medicine],
-    );
-    await expect(
-      checkout(id, 2, randomUUID(), { prescriptionId: prescription }),
-    ).rejects.toMatchObject({ status: 422 });
-    expect(paystack.initialize).not.toHaveBeenCalled();
-    await query("UPDATE prescriptions SET auth_status='Approved' WHERE id=$1", [
-      prescription,
-    ]);
-    await checkout(id, 2, randomUUID(), { prescriptionId: prescription });
-    await expect(
-      checkout(id, 2, randomUUID(), { prescriptionId: prescription }),
-    ).rejects.toMatchObject({ status: 422 });
-  });
+  it.each(['Approved', 'Cleared'])(
+    'enforces prescription access, matching medicine, approval (%s), and remaining quantities',
+    async (approval) => {
+      await query(
+        'UPDATE medicines SET prescription_required=true WHERE id=$1',
+        [medicine],
+      );
+      const id = await listing();
+      await expect(checkout(id)).rejects.toMatchObject({ status: 422 });
+      await query(
+        "INSERT INTO prescriptions VALUES ($1,$2,$3,$4,3,'Pending','Waiting')",
+        [prescription, buyer, buyerFacility, medicine],
+      );
+      await expect(
+        checkout(id, 2, randomUUID(), { prescriptionId: prescription }),
+      ).rejects.toMatchObject({ status: 422 });
+      expect(paystack.initialize).not.toHaveBeenCalled();
+      await query('UPDATE prescriptions SET auth_status=$2 WHERE id=$1', [
+        prescription,
+        approval,
+      ]);
+      await checkout(id, 2, randomUUID(), { prescriptionId: prescription });
+      await expect(
+        checkout(id, 2, randomUUID(), { prescriptionId: prescription }),
+      ).rejects.toMatchObject({ status: 422 });
+    },
+  );
   it('keeps one reservation and reference after an initialization timeout', async () => {
     const id = await listing();
     const key = randomUUID();

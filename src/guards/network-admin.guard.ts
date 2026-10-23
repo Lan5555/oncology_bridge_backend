@@ -77,6 +77,15 @@ export class NetworkAdminGuard implements CanActivate {
 
   private requiredPermission(method: string, path: string): string {
     const p = path.toLowerCase();
+    if (
+      p === '/admin/api/prescriptions' ||
+      p.startsWith('/admin/api/prescriptions/')
+    )
+      return method === 'GET' ? 'prescription.read' : 'prescription.review';
+    if (p === '/admin/api/shipments' || p.startsWith('/admin/api/shipments/'))
+      return method === 'GET' ? 'coldchain.read' : 'coldchain.manage';
+    if (p === '/admin/api/orders' || p.startsWith('/admin/api/orders/'))
+      return method === 'GET' ? 'order.read' : 'order.manage';
     if (p.startsWith('/api/reports')) return 'report.export';
     if (
       method === 'PUT' &&

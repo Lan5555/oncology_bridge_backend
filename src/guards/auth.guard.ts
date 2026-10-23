@@ -53,6 +53,13 @@ export class AuthGuard implements CanActivate {
     });
     if (!principal?.active)
       throw new UnauthorizedException('Account is inactive');
+    if (
+      'account_type' in payload &&
+      payload.account_type !== principal.account_type
+    )
+      throw new UnauthorizedException(
+        'Professional account changed; sign in again',
+      );
     const isNetworkAdmin = ['ADMIN', 'SUPERADMIN'].includes(
       principal.role?.name?.trim().toUpperCase() ?? '',
     );

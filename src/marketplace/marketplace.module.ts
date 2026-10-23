@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { OrdersModule } from '../orders/orders.module';
 import { ConfigModule } from '@nestjs/config';
 import { EncryptionModule } from '../encryption/encryption.module';
 import {
@@ -10,7 +11,7 @@ import { CloudinaryImagesService } from './cloudinary-images.service';
 import { PaystackService } from './paystack.service';
 
 @Module({
-  imports: [ConfigModule, EncryptionModule],
+  imports: [ConfigModule, EncryptionModule, OrdersModule],
   controllers: [MarketplaceController, MarketplacePaymentsController],
   providers: [MarketplaceService, CloudinaryImagesService, PaystackService],
   exports: [MarketplaceService],

@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import { Logger } from '@nestjs/common';
 import { DataSource, EntityManager, InsertEvent } from 'typeorm';
 import { EncryptionService } from '../encryption/encryption.service';
 import { EmailService, escapeHtml } from './email.service';
@@ -321,5 +322,35 @@ describe('durable email worker', () => {
     await worker.flush();
     expect(deliver).not.toHaveBeenCalled();
     expect(row).toMatchObject({ status: 'EXPIRED', payload: null });
+  });
+
+  it.each([
+    [new Error('Brevo HTTP 401'), 'Brevo HTTP 401'],
+    [
+      new DOMException('private details', 'TimeoutError'),
+      'Email provider request timed out',
+    ],
+    [new TypeError('fetch failed'), 'Email provider connection failed'],
+    [
+      new Error('secret-key user@example.com'),
+      'Delivery error (details suppressed to protect sensitive data)',
+    ],
+  ])('logs a safe delivery diagnostic for %s', async (error, reason) => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => {});
+    try {
+      const { worker, deliver } = setup();
+      deliver.mockRejectedValue(error);
+      await worker.flush();
+      expect(warn).toHaveBeenCalledWith(
+        `Email id delivery failed (attempt 1, PENDING): ${reason}`,
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(
+        /secret-key|user@example\.com|private details/,
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

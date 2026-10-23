@@ -40,9 +40,10 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
       CREATE TABLE role_permissions(role_id int,permission text,UNIQUE(role_id,permission));
       INSERT INTO role_permissions VALUES (2,'admin.access'),(2,'dashboard.read'),(3,'admin.access'),(3,'dashboard.read');
       CREATE TABLE hospitals(id uuid PRIMARY KEY,status text,deleted_at timestamptz);
+      CREATE TABLE users(id uuid PRIMARY KEY,active boolean,hospital_id uuid,deleted_at timestamptz);
       CREATE TABLE medicines(id uuid PRIMARY KEY,generic_name text,gtin text,deleted_at timestamptz);
       CREATE TABLE inventory(id uuid PRIMARY KEY,hospital_id uuid,medicine_id uuid,quantity int,selling_unit text,
-        batch_number text,expiry_date date,status text,created_at timestamptz DEFAULT CURRENT_TIMESTAMP);
+        batch_number text,expiry_date date,status text,created_at timestamptz DEFAULT CURRENT_TIMESTAMP,deleted_at timestamptz);
       CREATE TABLE scan_logs(inventory_id uuid,result text,client_uuid uuid,action text,gtin text,batch_number text,serial_number text,expiry_date date);
       CREATE TABLE transfer_requests(id uuid PRIMARY KEY,from_hospital uuid,to_hospital uuid,status text,quantity int,created_at timestamptz DEFAULT now(),approved_at timestamptz,inventory_id uuid);
       CREATE TABLE storage_units(id uuid PRIMARY KEY,facility_id uuid,last_seen_at timestamptz,offline_after_seconds int,operational_state text,target_min numeric,target_max numeric);
@@ -205,9 +206,13 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
         hospital: { id: id(1), status: 'ACTIVE' },
       });
     await pg.exec(
-      'TRUNCATE hospitals,medicines,inventory,scan_logs,transfer_requests,storage_units,cold_chain_events,temperature_logs',
+      'TRUNCATE users,hospitals,medicines,inventory,scan_logs,transfer_requests,storage_units,cold_chain_events,temperature_logs',
     );
     for (const n of [1, 2]) {
+      await sql('INSERT INTO users VALUES($1,true,$2,NULL)', [
+        id(100 + n),
+        id(n),
+      ]);
       await sql("INSERT INTO hospitals VALUES ($1,'ACTIVE',NULL)", [id(n)]);
       await sql('INSERT INTO medicines VALUES ($1,$2,$3,NULL)', [
         id(20 + n),
@@ -264,12 +269,16 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
     expect(facility.headers['cache-control']).toContain('no-store');
     expect(facility.body.data).toMatchObject({
       nodes: 1,
+      activeUsers: 1,
+      totalInventoryItems: 1,
       totalVials: 10,
       scope: { type: 'facility', facilityId: id(1) },
       gs1AuthenticatedVials: 0,
     });
     expect(admin.body.data).toMatchObject({
       nodes: 2,
+      activeUsers: 2,
+      totalInventoryItems: 2,
       totalVials: 30,
       scope: { type: 'network' },
     });
@@ -383,12 +392,37 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
     expect((await get('summary')).status).toBe(500);
     expect((await get('charts')).status).toBe(500);
   });
+  it('counts enabled accounts and inventory batches rather than stock quantities and retains zero and unavailable recovery', async () => {
+    await sql('INSERT INTO users VALUES($1,false,$2,NULL),($3,true,$2,now())', [
+      id(201),
+      id(1),
+      id(202),
+    ]);
+    const network = (await get('summary', 11)).body.data;
+    expect(network).toMatchObject({
+      activeUsers: 2,
+      totalInventoryItems: 2,
+      totalVials: 30,
+      valueRecoveredNaira: null,
+    });
+    await sql('UPDATE inventory SET quantity=999 WHERE hospital_id=$1', [
+      id(1),
+    ]);
+    expect((await get('summary', 11)).body.data.totalInventoryItems).toBe(2);
+    await sql('UPDATE medicines SET deleted_at=now() WHERE id=$1', [id(21)]);
+    expect((await get('summary', 11)).body.data.totalInventoryItems).toBe(1);
+    await sql('UPDATE users SET active=false WHERE hospital_id=$1', [id(1)]);
+    expect((await get('summary')).body.data.activeUsers).toBe(0);
+    await sql('UPDATE inventory SET status=NULL WHERE hospital_id=$1', [id(2)]);
+    expect((await get('summary', 11)).body.data.nearExpiry).toBeNull();
+  });
   it('keeps missing percentages unavailable and preserves recorded zeros without a fabricated region', async () => {
     await sql('DELETE FROM inventory WHERE hospital_id=$1', [id(1)]);
     const response = await get('summary');
     expect(response.body.data).toMatchObject({
       network: { region: null },
       totalVials: 0,
+      totalInventoryItems: 0,
       nodes: 1,
       stockOutRiskPct: null,
       chainIntegrityPct: null,

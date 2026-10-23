@@ -6,24 +6,25 @@ import {
   Post,
   Req,
   UseGuards,
+  Ip,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { AuthGuard } from '../guards/auth.guard';
 import { UsersService } from './users.service';
 import { PartialType } from '@nestjs/mapped-types';
 import { CreateUserDto } from './dto/create-user.dto';
+import { ResubmitVerificationDto } from './dto/resubmit-verification.dto';
 
 class UpdateMeDto extends PartialType(CreateUserDto) {}
 
 type AuthenticatedRequest = Request & { user?: { id: string } };
-@UseGuards(AuthGuard)
 @Controller('api/me')
 export class MeController {
   constructor(private readonly users: UsersService) {}
-  @Get() me(@Req() req: AuthenticatedRequest) {
+  @Get() @UseGuards(AuthGuard) me(@Req() req: AuthenticatedRequest) {
     return this.users.findOneUser(String(req.user?.id));
   }
-  @Patch() async update(
+  @Patch() @UseGuards(AuthGuard) async update(
     @Req() req: AuthenticatedRequest,
     @Body() body: UpdateMeDto,
   ) {
@@ -32,18 +33,9 @@ export class MeController {
     return this.users.findOneUser(id);
   }
   @Post('verification/resubmit') async resubmit(
-    @Req() req: AuthenticatedRequest,
+    @Body() body: ResubmitVerificationDto,
+    @Ip() ip: string,
   ) {
-    return {
-      success: true,
-      message:
-        'Registry lookup is mocked until MDCN/PCN credentials are configured',
-      data: {
-        user: await this.users.authenticatedUser(String(req.user?.id)),
-        status: 'MANUAL_REVIEW',
-        registryResult: 'UNAVAILABLE',
-        demo: true,
-      },
-    };
+    return this.users.resubmitVerification(body, ip);
   }
 }

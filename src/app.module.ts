@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { ShipmentsModule } from './shipments/shipments.module';
+import { OrdersModule } from './orders/orders.module';
 import { FormOptionsModule } from './form_options/form-options.module';
 import { EmailModule } from './email/email.module';
 import { AppController } from './app.controller';
@@ -113,6 +115,8 @@ import { RegistryMetadataModule } from './registry_metadata/registry-metadata.mo
     IotDevicesModule,
     AdminModule,
     MarketplaceModule,
+    OrdersModule,
+    ShipmentsModule,
     OperationalReadsModule,
     RegistryMetadataModule,
   ],

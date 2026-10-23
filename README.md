@@ -202,6 +202,12 @@ Brevo delivers account, password-recovery and notification emails when configure
 
 ## Frontend mapping
 
+Admin overview counts and the protected prescription authorization queue are documented in [database/PRESCRIPTION-REVIEW.md](database/PRESCRIPTION-REVIEW.md). Apply [database/prescription-review.sql](database/prescription-review.sql) before deploying the updated prescription routes and entity.
+
+In-transit temperature monitoring is prepared with an explicitly pending provider adapter. Apply [database/shipment-temperature.sql](database/shipment-temperature.sql) before deploying it; API routes, frontend status handling, and provider integration steps are in [database/SHIPMENT-TEMPERATURE.md](database/SHIPMENT-TEMPERATURE.md).
+
+Buyer/admin marketplace purchase order tracking and fulfillment are documented in [database/PURCHASE-ORDERS.md](database/PURCHASE-ORDERS.md). Apply its migration before deploying the order routes and updated checkout worker.
+
 The managed choices, pharmacy directory, transfer custody workflow, and real report downloads require [database/frontend-contract.sql](database/frontend-contract.sql). Deployment order, option provisioning, permission grants, and API shapes are in [database/FRONTEND-CONTRACT.md](database/FRONTEND-CONTRACT.md).
 
 - Auth screens: `/auth/api/login`, `/auth/api/refresh`, `/hospital/api/register-facility`.

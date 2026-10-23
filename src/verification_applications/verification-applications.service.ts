@@ -8,10 +8,10 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { VerificationApplication } from './entities/verification-application.entity';
 import { User } from '../users/entities/user.entity';
-import { Hospital } from '../hospital/entities/hospital.entity';
+import { Hospital, FacilityStatus } from '../hospital/entities/hospital.entity';
 import { AuditLog } from '../audit_log/entities/audit_log.entity';
 import { Notification } from '../notification/entities/notification.entity';
 import { EncryptionService } from '../encryption/encryption.service';
@@ -171,6 +171,14 @@ export class VerificationApplicationsService {
       });
       if (!row)
         throw new NotFoundException('Verification application not found');
+      await manager.getRepository(User).findOne({
+        where: { id: row.user_id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      const applicant = await manager
+        .getRepository(User)
+        .findOneBy({ id: row.user_id });
+      await this.assertCurrentEvidence(row, applicant, manager);
       if (['VERIFIED', 'REJECTED'].includes(row.status))
         throw new ConflictException(
           'A decided application cannot be rechecked',
@@ -240,14 +248,20 @@ export class VerificationApplicationsService {
       const previousStatus = row.status;
       const reviewedAt = new Date();
       const users = manager.getRepository(User);
+      await users.findOne({
+        where: { id: row.user_id },
+        lock: { mode: 'pessimistic_write' },
+      });
       const user = await users.findOne({
         where: { id: row.user_id },
         relations: { hospital: true },
       });
       if (!user) throw new NotFoundException('Applicant not found');
+      await this.assertCurrentEvidence(row, user, manager);
       if (!user.hospital)
         throw new ConflictException('Applicant facility is missing');
       const facility = user.hospital;
+      const existingFacility = facility.status === FacilityStatus.ACTIVE;
       const membership = await manager
         .getRepository(FacilityMembershipRequest)
         .findOneBy({ user_id: user.id });
@@ -256,7 +270,7 @@ export class VerificationApplicationsService {
         !['PENDING', 'MANUAL_REVIEW'].includes(user.verification_status) ||
         (membership
           ? facility.status !== 'ACTIVE'
-          : facility.status !== 'PENDING')
+          : !['PENDING', 'ACTIVE'].includes(facility.status))
       )
         throw new ConflictException(
           'Application, user, and facility must all be pending review before a decision',
@@ -267,7 +281,7 @@ export class VerificationApplicationsService {
       row.reviewed_at = reviewedAt;
       row.reason = note ?? null;
       user.verification_status = decision;
-      if (!membership)
+      if (!membership && !existingFacility)
         facility.status =
           decision === 'VERIFIED' ? ('ACTIVE' as any) : ('REJECTED' as any);
       user.active =
@@ -337,6 +351,35 @@ export class VerificationApplicationsService {
         },
       });
     });
+  }
+
+  private async assertCurrentEvidence(
+    row: VerificationApplication,
+    user: User | null,
+    manager: EntityManager,
+  ) {
+    const expected = {
+      DOCTOR: 'MDCN',
+      PHARMACIST: 'PCN',
+      PHARMACY_STORE: 'PCN_PREMISES',
+    }[user?.account_type ?? ''];
+    const latest = await manager
+      .getRepository(VerificationApplication)
+      .findOne({
+        where: { user_id: row.user_id },
+        order: { submitted_at: 'DESC', id: 'DESC' },
+      });
+    if (
+      !user ||
+      !user.license_number ||
+      row.license_number !== user.license_number ||
+      row.registry !== user.license_registry ||
+      row.registry !== expected ||
+      latest?.id !== row.id
+    )
+      throw new ConflictException(
+        'Current professional licence evidence is required; historical applications cannot be reused',
+      );
   }
 
   async all(status?: string) {

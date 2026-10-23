@@ -94,7 +94,7 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
       INSERT INTO role_permissions(role_id,permission) VALUES (1,'admin.access'),(2,'admin.access'),(4,'admin.access');
       CREATE TABLE hospitals(id uuid PRIMARY KEY,name text,city text,state text,status text,deleted_at timestamptz,
         hospital_code text,facility_type text,address text,latitude numeric,longitude numeric,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());
-      CREATE TABLE users(id uuid PRIMARY KEY,hospital_id uuid,email text,password_hash text,refresh_token text);
+      CREATE TABLE users(id uuid PRIMARY KEY,hospital_id uuid,email text,password_hash text,refresh_token text,first_name text,last_name text);
       CREATE TABLE medicines(id uuid PRIMARY KEY,gtin text,generic_name text,brand_name text,manufacturer text,strength text,
         dosage_form text,storage_temperature text,prescription_required boolean,catalog_facility_id uuid,created_at timestamptz DEFAULT now(),deleted_at timestamptz);
       CREATE TABLE inventory(id uuid PRIMARY KEY,hospital_id uuid,medicine_id uuid,batch_number text,serial_number text,
@@ -103,8 +103,8 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
         price_kobo bigint,quantity int,description text,storage text,prescription_required boolean,status text,
         created_at timestamptz DEFAULT now(),CONSTRAINT marketplace_listings_status_check CHECK(status IN ('PUBLISHED','PENDING_REVIEW','SUSPENDED')));
       CREATE TABLE marketplace_listing_images(id uuid PRIMARY KEY,listing_id uuid,url text,alt text,position int);
-      CREATE TABLE prescriptions(id uuid PRIMARY KEY,display_id text,patient_ref text,drug_id uuid,qty int,icd10 text,tnm_stage text,
-        pharmacy_facility_id uuid,auth_status text,order_stage text,prescriber_id uuid,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());
+      CREATE TABLE prescriptions(id uuid PRIMARY KEY,display_id text,patient_ref text,drug_id uuid,qty int,icd10 text,description text,tnm_stage text,
+        insurer text,pharmacy_facility_id uuid,auth_status text,order_stage text,prescriber_id uuid,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());
       CREATE TABLE invoices(id uuid PRIMARY KEY,reference text,order_id uuid,pharmacy_facility_id uuid,status text,total_naira numeric,
         paystack_reference text,paid_at timestamptz,created_at timestamptz DEFAULT now());
       CREATE TABLE invoice_items(id uuid PRIMARY KEY,invoice_id uuid,description text,quantity int,unit_price_naira numeric);
@@ -150,13 +150,16 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
         `INSERT INTO hospitals(id,name,city,state,status,hospital_code,facility_type,address) VALUES ($1,$2,'Lagos','Lagos','ACTIVE',$2,'PHARMACY','Business address')`,
         [id(n), label],
       );
-      await sql('INSERT INTO users VALUES ($1,$2,$3,$4,$5)', [
-        id(10 + n),
-        id(n),
-        'encrypted-email',
-        'PASSWORD-MUST-NOT-LEAK',
-        'REFRESH-MUST-NOT-LEAK',
-      ]);
+      await sql(
+        'INSERT INTO users(id,hospital_id,email,password_hash,refresh_token) VALUES ($1,$2,$3,$4,$5)',
+        [
+          id(10 + n),
+          id(n),
+          'encrypted-email',
+          'PASSWORD-MUST-NOT-LEAK',
+          'REFRESH-MUST-NOT-LEAK',
+        ],
+      );
       await sql(
         `INSERT INTO medicines(id,gtin,generic_name,brand_name,manufacturer,strength,dosage_form,storage_temperature,prescription_required,catalog_facility_id)
         VALUES ($1,$2,$3,$3,'Maker','10mg','vial','2-8 C',true,$4)`,

@@ -65,7 +65,7 @@ export class EmailWorker implements OnApplicationBootstrap, OnModuleDestroy {
               row.status = 'SENT';
               row.sent_at = new Date();
               row.payload = null;
-            } catch {
+            } catch (error: unknown) {
               row.status = row.attempts >= 8 ? 'FAILED' : 'PENDING';
               row.available_at = new Date(
                 Date.now() +
@@ -73,7 +73,7 @@ export class EmailWorker implements OnApplicationBootstrap, OnModuleDestroy {
               );
               if (row.status === 'FAILED') row.payload = null;
               this.logger.warn(
-                `Email ${row.id} delivery failed (attempt ${row.attempts}, ${row.status})`,
+                `Email ${row.id} delivery failed (attempt ${row.attempts}, ${row.status}): ${this.deliveryFailureReason(error)}`,
               );
             }
           }
@@ -87,5 +87,23 @@ export class EmailWorker implements OnApplicationBootstrap, OnModuleDestroy {
     } finally {
       this.running = false;
     }
+  }
+
+  private deliveryFailureReason(error: unknown): string {
+    // Only log known safe diagnostics; arbitrary errors can contain secrets or PII.
+    if (error instanceof Error || error instanceof DOMException) {
+      if (/^Brevo HTTP [1-5]\d{2}$/.test(error.message)) return error.message;
+      if (
+        error.message === 'Email delivery is not configured' ||
+        error.message === 'Brevo response missing message ID'
+      )
+        return error.message;
+      if (error.name === 'TimeoutError')
+        return 'Email provider request timed out';
+      if (error.name === 'AbortError') return 'Email provider request aborted';
+      if (error instanceof TypeError && error.message === 'fetch failed')
+        return 'Email provider connection failed';
+    }
+    return 'Delivery error (details suppressed to protect sensitive data)';
   }
 }

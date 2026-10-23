@@ -60,6 +60,17 @@ export class DashboardService {
         AND ($1::uuid IS NULL OR id=$1)`,
           [facilityId],
         );
+        const [counts] = await manager.query<
+          { active_users: number; inventory_items: number }[]
+        >(
+          `SELECT
+          (SELECT count(*)::int FROM users u WHERE u.active=true AND (to_jsonb(u)->>'deleted_at') IS NULL
+            AND ($1::uuid IS NULL OR u.hospital_id=$1)) active_users,
+          (SELECT count(*)::int FROM inventory i WHERE (to_jsonb(i)->>'deleted_at') IS NULL
+            AND NOT EXISTS(SELECT 1 FROM medicines deleted WHERE deleted.id=i.medicine_id AND deleted.deleted_at IS NOT NULL)
+            AND ($1::uuid IS NULL OR i.hospital_id=$1)) inventory_items`,
+          [facilityId],
+        );
         const items = await manager.query<DashboardStockRow[]>(
           `
         SELECT i.*, m.generic_name AS drug,
@@ -74,7 +85,7 @@ export class DashboardService {
           )) AS authenticated_serials
         FROM inventory i JOIN medicines m ON m.id=i.medicine_id AND m.deleted_at IS NULL
         JOIN hospitals h ON h.id=i.hospital_id AND h.status='ACTIVE' AND h.deleted_at IS NULL
-        WHERE UPPER(i.status)<>'DISPOSED' AND ($1::uuid IS NULL OR i.hospital_id=$1)
+        WHERE (i.status IS NULL OR UPPER(i.status)<>'DISPOSED') AND (to_jsonb(i)->>'deleted_at') IS NULL AND ($1::uuid IS NULL OR i.hospital_id=$1)
         ORDER BY i.created_at,i.id`,
           [facilityId],
         );
@@ -101,13 +112,13 @@ export class DashboardService {
             AND ($1::uuid IS NULL OR unit.facility_id=$1)) observed`,
           [facilityId],
         );
-        return { asOf, facilities, items, transfers, units };
+        return { asOf, facilities, items, transfers, units, counts };
       },
     );
   }
 
   async summary(scope: DashboardScope) {
-    const { asOf, facilities, items, transfers, units } =
+    const { asOf, facilities, items, transfers, units, counts } =
       await this.snapshot(scope);
     const available = items.filter((i) => i.available);
     const vialItems = available.filter((i) => i.selling_unit === 'vial');
@@ -138,6 +149,8 @@ export class DashboardService {
       scope,
       network: { name: 'Oncosourz', region: null },
       nodes: facilities.length,
+      activeUsers: counts.active_users,
+      totalInventoryItems: counts.inventory_items,
       gs1AuthenticatedVials: unknownVials
         ? null
         : vialItems.reduce((n, i) => n + Number(i.authenticated_serials), 0),

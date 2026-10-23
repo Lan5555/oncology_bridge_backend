@@ -1,5 +1,8 @@
 // PostgreSQL bigint columns are returned as strings by the driver.
 export interface ActorRow {
+  first_name: string;
+  last_name: string;
+  facility_name: string;
   id: string;
   hospital_id: string;
   email: string;
@@ -58,6 +61,8 @@ export interface PrescriptionRow {
   order_stage: string;
 }
 export interface OrderRow {
+  order_status: string;
+  version: number;
   id: string;
   buyer_id: string;
   listing_id: string;

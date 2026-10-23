@@ -12,6 +12,7 @@ export class Prescription {
   @Column({ unique: true }) display_id!: string;
   @Column() patient_ref!: string;
   @Column() icd10!: string;
+  @Column({ type: 'text', nullable: true }) description!: string | null;
   @Column({ nullable: true }) tnm_stage!: string;
   @Column('uuid') drug_id!: string;
   @Column('int') qty!: number;
@@ -19,6 +20,7 @@ export class Prescription {
   @Column('uuid') pharmacy_facility_id!: string;
   @Column({ default: 'Pending' }) auth_status!: string;
   @Column({ default: 'Waiting' }) order_stage!: string;
+  @Column({ default: 1 }) version!: number;
   @Column('uuid') prescriber_id!: string;
   @CreateDateColumn() created_at!: Date;
   @UpdateDateColumn() updated_at!: Date;

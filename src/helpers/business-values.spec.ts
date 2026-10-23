@@ -94,7 +94,12 @@ describe('explicit business values and missing data', () => {
   });
 
   it('validates supplied insurer/payment labels on prescription creation and updates before saving', async () => {
-    const row = Object.assign(new Prescription(), { id: 'prescription' });
+    const row = Object.assign(new Prescription(), {
+      id: 'prescription',
+      auth_status: 'Pending',
+      order_stage: 'Waiting',
+      version: 1,
+    });
     const save = jest.fn((data: Prescription) => Promise.resolve(data));
     const prescriptions = {
       create: (data: Partial<Prescription>) => Object.assign(row, data),
@@ -135,12 +140,19 @@ describe('explicit business values and missing data', () => {
       qty: 1,
     };
     expect(
-      (await service.update(row.id, { insurer: 'Self pay' })).insurer,
+      (
+        await service.update(
+          row.id,
+          { insurer: 'Self pay' },
+          undefined,
+          'doctor',
+        )
+      ).insurer,
     ).toBe('Self pay');
     const writes = save.mock.calls.length;
     await expect(service.create({ ...data, insurer: ' ' })).rejects.toThrow();
     await expect(
-      service.update(row.id, { insurer: 'x'.repeat(121) }),
+      service.update(row.id, { insurer: 'x'.repeat(121) }, undefined, 'doctor'),
     ).rejects.toThrow('120');
     expect(save).toHaveBeenCalledTimes(writes);
   });

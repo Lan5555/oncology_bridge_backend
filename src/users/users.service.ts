@@ -2,13 +2,18 @@
 /* eslint-disable @typescript-eslint/no-unsafe-enum-comparison */
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
+  UnauthorizedException,
+  HttpException,
 } from '@nestjs/common';
 import { CreateUserDto } from './dto/create-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
+import { PROFESSIONAL_TYPES, UpdateUserDto } from './dto/update-user.dto';
+import { UserSession } from '../user_sessions/entities/user_session.entity';
+import { ResubmitVerificationDto } from './dto/resubmit-verification.dto';
 import { ResponseHelper } from '../helpers/response-helper';
 import { InjectRepository } from '@nestjs/typeorm';
 import { User } from './entities/user.entity';
@@ -28,6 +33,7 @@ import { RegistryMetadataService } from '../registry_metadata/registry-metadata.
 
 @Injectable()
 export class UsersService {
+  private readonly resubmissionAttempts = new Map<string, number[]>();
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
@@ -94,7 +100,10 @@ export class UsersService {
     if (verifiedProfessional && user.account_type) {
       for (const page of professionalPages[user.account_type] ?? [])
         pages.add(page);
-      if (professionalPages[user.account_type]) pages.add('pg-marketplace');
+      if (professionalPages[user.account_type]) {
+        pages.add('pg-marketplace');
+        pages.add('pg-orders');
+      }
     }
     if (canManageInventory)
       for (const page of ['pg-inventory', 'pg-scan', 'pg-medicines'])
@@ -492,6 +501,8 @@ export class UsersService {
   }
 
   async updateForActor(id: string, dto: UpdateUserDto, actorId: string) {
+    if (this.hasAccountTypeFields(dto))
+      return this.updateAsAdmin(id, dto, actorId);
     const actor = await this.userRepository.findOne({
       where: { id: actorId },
       relations: { role: true, hospital: true },
@@ -518,6 +529,10 @@ export class UsersService {
   }
 
   async update(id: string, updateUserDto: UpdateUserDto) {
+    if (this.hasAccountTypeFields(updateUserDto))
+      throw new ForbiddenException(
+        'Professional type changes require network administration',
+      );
     const user = await this.userRepository.findOneBy({ id });
 
     if (!user) {
@@ -552,11 +567,80 @@ export class UsersService {
   async updateAsAdmin(id: string, dto: UpdateUserDto, actorId: string) {
     return this.dataSource.transaction(async (manager) => {
       const users = manager.getRepository(User);
+      const typeRequested = this.hasAccountTypeFields(dto);
+      if (typeRequested) {
+        const actor = await users.findOne({
+          where: { id: actorId },
+          relations: { role: true },
+        });
+        const grants = actor?.role
+          ? await manager
+              .getRepository(RolePermission)
+              .findBy({ role_id: actor.role.id })
+          : [];
+        if (
+          !actor?.active ||
+          !['ADMIN', 'SUPERADMIN'].includes(
+            actor.role?.name.trim().toUpperCase(),
+          ) ||
+          !['admin.access', 'user.update'].every((p) =>
+            grants.some((g) => g.permission === p),
+          )
+        )
+          throw new ForbiddenException(
+            'admin.access and user.update permissions are required',
+          );
+        if (
+          !PROFESSIONAL_TYPES.includes(
+            dto.account_type as (typeof PROFESSIONAL_TYPES)[number],
+          ) ||
+          !Object.prototype.hasOwnProperty.call(dto, 'expected_account_type') ||
+          (dto.expected_account_type !== null &&
+            !PROFESSIONAL_TYPES.includes(
+              dto.expected_account_type as (typeof PROFESSIONAL_TYPES)[number],
+            )) ||
+          typeof dto.account_type_change_reason !== 'string' ||
+          !dto.account_type_change_reason.trim() ||
+          dto.account_type_change_reason.trim().length > 1000
+        )
+          throw new BadRequestException(
+            'A professional type, expected account type and reason of 1 to 1000 characters are required',
+          );
+      }
+      // Lock only the user table; PostgreSQL cannot lock nullable relation joins.
+      await users.findOne({
+        where: { id },
+        lock: { mode: 'pessimistic_write' },
+      });
       const user = await users.findOne({
         where: { id },
         relations: { role: true, hospital: true },
       });
       if (!user) throw new NotFoundException('User not found');
+      const oldType = user.account_type ?? null;
+      const previousLicense = {
+        number: user.license_number,
+        registry: user.license_registry,
+      };
+      const typeChanged = typeRequested && dto.account_type !== oldType;
+      if (typeRequested) {
+        if (
+          this.stockAccess.isNetworkAdmin(user) ||
+          user.role?.name.trim().toUpperCase() === 'FACILITY_ADMIN' ||
+          id === actorId
+        )
+          throw new ForbiddenException(
+            'Administrator accounts cannot be reclassified',
+          );
+        if (oldType !== dto.expected_account_type)
+          throw new ConflictException(
+            'Account type changed; reload the user before retrying',
+          );
+        if (typeChanged && dto.is_active === true)
+          throw new BadRequestException(
+            'A reclassified account requires a new licence review before activation',
+          );
+      }
       const deactivate = dto.is_active === false;
       if (
         deactivate &&
@@ -605,20 +689,158 @@ export class UsersService {
       }
       if (dto.password !== undefined)
         user.password_hash = this.encryptionService.hashPassword(dto.password);
+      if (typeChanged) {
+        // Professional roles are derived grants, not independently assigned access.
+        if (
+          ['DOCTOR', 'ONCOLOGIST', 'PHARMACIST', 'PHARMACY_STORE'].includes(
+            user.role?.name,
+          )
+        ) {
+          const name =
+            dto.account_type === 'DOCTOR' ? 'ONCOLOGIST' : 'PHARMACIST';
+          const role = await manager.getRepository(Role).findOneBy({ name });
+          if (!role)
+            throw new ConflictException('Professional role is not configured');
+          user.role = role;
+        }
+        user.account_type = dto.account_type!;
+        user.verification_status = 'MANUAL_REVIEW';
+        user.active = false;
+        user.registry_result = 'UNAVAILABLE';
+        // Evidence remains in historical applications; none is current proof.
+        user.license_number = null;
+        user.license_registry = null;
+        await manager
+          .getRepository(UserSession)
+          .update({ user: { id } }, { refresh_token: '' });
+      }
       const saved = await users.save(user);
       await manager.getRepository(AuditLog).save({
         user: { id: actorId } as User,
-        action: 'USER_UPDATED',
-        description: `User ${id} updated; active ${before} -> ${saved.active}`,
+        action: typeChanged ? 'USER_ACCOUNT_TYPE_CHANGED' : 'USER_UPDATED',
+        description: typeChanged
+          ? JSON.stringify({
+              actor: actorId,
+              target: id,
+              old_type: oldType,
+              new_type: saved.account_type,
+              reason: dto.account_type_change_reason!.trim(),
+              verification_status: saved.verification_status,
+              previous_license: previousLicense,
+              timestamp: new Date().toISOString(),
+            })
+          : `User ${id} updated; active ${before} -> ${saved.active}`,
         ip_address: 'admin-api',
         event_key: null,
+        object_type: 'user',
+        object_id: id,
+        before_status: oldType,
+        after_status: saved.account_type,
       });
-      const { password_hash, email_hash, phone_hash, ...safe } = saved;
       return ResponseHelper.Success('User updated successfully', {
-        ...safe,
+        id: saved.id,
+        first_name: saved.first_name,
+        last_name: saved.last_name,
+        account_type: saved.account_type ?? null,
+        verification_status: saved.verification_status,
+        active: saved.active,
+        role: saved.role ? { id: saved.role.id, name: saved.role.name } : null,
         email: this.encryptionService.decrypt(saved.email),
         phone: this.encryptionService.decrypt(saved.phone),
       });
+    });
+  }
+
+  private hasAccountTypeFields(dto: UpdateUserDto) {
+    return [
+      'account_type',
+      'expected_account_type',
+      'account_type_change_reason',
+    ].some((k) => dto[k] !== undefined);
+  }
+
+  async resubmitVerification(dto: ResubmitVerificationDto, ip: string) {
+    const key = ip || 'unknown';
+    const now = Date.now();
+    for (const [address, times] of this.resubmissionAttempts)
+      if (times.every((t) => now - t >= 60_000))
+        this.resubmissionAttempts.delete(address);
+    const attempts = (this.resubmissionAttempts.get(key) ?? []).filter(
+      (t) => now - t < 60_000,
+    );
+    if (attempts.length >= 5)
+      throw new HttpException('Too many verification attempts', 429);
+    attempts.push(now);
+    this.resubmissionAttempts.set(key, attempts);
+    return this.dataSource.transaction(async (manager) => {
+      const users = manager.getRepository(User);
+      const user = await users.findOne({
+        where: { email_hash: this.encryptionService.hash(dto.email) },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (
+        !user ||
+        !this.encryptionService.comparePassword(
+          dto.password,
+          user.password_hash,
+        )
+      )
+        throw new UnauthorizedException('Invalid credentials');
+      if (
+        user.active ||
+        user.verification_status !== 'MANUAL_REVIEW' ||
+        user.license_number !== null
+      )
+        throw new ConflictException(
+          'This account is not awaiting new professional evidence',
+        );
+      const registry = {
+        DOCTOR: 'MDCN',
+        PHARMACIST: 'PCN',
+        PHARMACY_STORE: 'PCN_PREMISES',
+      }[user.account_type ?? ''];
+      if (!registry || dto.registry !== registry)
+        throw new BadRequestException(
+          'Licence registry does not match the current professional type',
+        );
+      const number = dto.license_number.toUpperCase();
+      if (await users.findOneBy({ license_number: number }))
+        throw new ConflictException('Licence number is already assigned');
+      user.license_number = number;
+      user.license_registry = registry;
+      await users.save(user);
+      const application = await manager
+        .getRepository(VerificationApplication)
+        .save({
+          user_id: user.id,
+          registry,
+          license_number: number,
+          status: 'MANUAL_REVIEW',
+          registry_result: 'UNAVAILABLE',
+          reviewer_id: null,
+          reviewed_at: null,
+          reason: null,
+        });
+      await manager.getRepository(AuditLog).save({
+        user,
+        action: 'VERIFICATION_SUBMITTED',
+        description: `New professional evidence submitted for ${user.account_type}; application ${application.id}`,
+        ip_address: ip || 'unknown',
+        event_key: null,
+        object_type: 'verification_application',
+        object_id: application.id,
+        before_status: null,
+        after_status: 'MANUAL_REVIEW',
+      });
+      return ResponseHelper.Success(
+        'New licence evidence submitted for manual review',
+        {
+          id: application.id,
+          account_type: user.account_type,
+          verification_status: 'MANUAL_REVIEW',
+          active: false,
+        },
+      );
     });
   }
 

@@ -1,4 +1,5 @@
 import { SELLING_UNITS } from '../inventory/selling-unit';
+import { OrderTrackingService } from '../orders/order-tracking.service';
 import { listingExists } from './listing-exists';
 import {
   ForbiddenException,
@@ -84,6 +85,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     private readonly paystack: PaystackService,
     private readonly encryption: EncryptionService,
     private readonly config: ConfigService,
+    private readonly tracking: OrderTrackingService,
   ) {}
 
   onModuleInit() {
@@ -107,7 +109,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
   }
   private async actor(manager: EntityManager, id: string, listing = false) {
     const [user] = await manager.query<ActorRow[]>(
-      `SELECT u.*,r.name role_name,h.status facility_status,h.deleted_at facility_deleted,
+      `SELECT u.*,r.name role_name,h.name facility_name,h.status facility_status,h.deleted_at facility_deleted,
       ${VERIFIED} verified_record,
       EXISTS(SELECT 1 FROM role_permissions rp WHERE rp.role_id=u.role_id AND rp.permission='${MARKETPLACE_LIST_PERMISSION}') can_list
       FROM users u JOIN roles r ON r.id=u.role_id JOIN hospitals h ON h.id=u.hospital_id WHERE u.id=$1`,
@@ -394,7 +396,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       (rx.prescriber_id !== user.id &&
         rx.pharmacy_facility_id !== user.hospital_id) ||
       rx.drug_id !== medicineId ||
-      rx.auth_status?.toUpperCase() !== 'APPROVED' ||
+      !['APPROVED', 'CLEARED'].includes(rx.auth_status?.toUpperCase()) ||
       ['DELIVERED', 'DISPENSED', 'CANCELLED', 'REJECTED'].includes(
         rx.order_stage?.toUpperCase(),
       )
@@ -500,6 +502,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         quantity: dto.quantity,
         unitPriceKobo: Number(row.price_kobo),
         feesKobo: 0,
+        deliveryFeeKobo: 0,
       };
       const minutes = Math.min(
         60,
@@ -510,8 +513,8 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       );
       const [created] = await manager.query<OrderRow[]>(
         `INSERT INTO marketplace_orders(id,buyer_id,listing_id,inventory_item_id,facility_id,
-        prescription_id,idempotency_key,payload_hash,quantity,unit_price_kobo,total_kobo,snapshot,invoice_reference,payment_reference,expires_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now()+($15 * interval '1 minute')) RETURNING *`,
+        prescription_id,idempotency_key,payload_hash,quantity,unit_price_kobo,total_kobo,snapshot,invoice_reference,payment_reference,expires_at,buyer_snapshot)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now()+($15 * interval '1 minute'),$16) RETURNING *`,
         [
           id,
           actorId,
@@ -528,7 +531,19 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
           invoice,
           payment,
           minutes,
+          {
+            name: [user.first_name, user.last_name].filter(Boolean).join(' '),
+            facilityName: user.facility_name ?? null,
+          },
         ],
+      );
+      await this.tracking.event(
+        manager,
+        id,
+        'created',
+        'PENDING_PAYMENT',
+        'Order created. Awaiting payment.',
+        actorId,
       );
       return created;
     });
@@ -545,6 +560,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       reference: order.payment_reference,
       invoiceReference: order.invoice_reference,
       orderId: order.id,
+      orderReference: order.invoice_reference,
       totalNaira: Number(order.total_kobo) / 100,
       expiresAt: new Date(order.expires_at).toISOString(),
     };
@@ -667,19 +683,41 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         const failed = ['failed', 'abandoned', 'reversed'].includes(
           payment.status,
         );
+        const expired = new Date(order.expires_at).getTime() <= Date.now();
+        const cancelled =
+          failed || expired || order.reservation_state === 'RELEASED';
+        const nextPayment =
+          failed || order.payment_status === 'PAYMENT_FAILED'
+            ? 'PAYMENT_FAILED'
+            : cancelled
+              ? 'EXPIRED'
+              : 'AWAITING_PAYMENT';
         await manager.query(
           `UPDATE marketplace_orders SET last_verified_at=now(),payment_status=$2,
-          reservation_state=CASE WHEN $3 OR expires_at<=now() THEN 'RELEASED' ELSE reservation_state END WHERE id=$1`,
-          [
-            order.id,
-            failed
-              ? 'PAYMENT_FAILED'
-              : new Date(order.expires_at).getTime() <= Date.now()
-                ? 'EXPIRED'
-                : 'AWAITING_PAYMENT',
-            failed,
-          ],
+          reservation_state=CASE WHEN $3 THEN 'RELEASED' ELSE reservation_state END,
+          order_status=CASE WHEN $3 THEN 'CANCELLED' ELSE order_status END,
+          version=version+CASE WHEN payment_status<>$2 OR ($3 AND order_status<>'CANCELLED') THEN 1 ELSE 0 END,
+          updated_at=CASE WHEN payment_status<>$2 OR ($3 AND order_status<>'CANCELLED') THEN now() ELSE updated_at END WHERE id=$1`,
+          [order.id, nextPayment, cancelled],
         );
+        if (failed)
+          await this.tracking.event(
+            manager,
+            order.id,
+            'payment-failed',
+            'FAILED',
+            'The payment provider reported that payment was unsuccessful.',
+          );
+        if (cancelled && order.order_status !== 'CANCELLED')
+          await this.tracking.event(
+            manager,
+            order.id,
+            'reservation-released',
+            'CANCELLED',
+            failed
+              ? 'Order cancelled after unsuccessful payment.'
+              : 'Payment reservation expired. Order cancelled.',
+          );
         return;
       }
       let release =
@@ -715,12 +753,13 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       // Release our hold before decrementing so the stock trigger protects only other buyers.
       await manager.query(
         `UPDATE marketplace_orders SET payment_status=$2,reservation_state=$3,paid_at=now(),last_verified_at=now(),
-        fulfillment_state=$4 WHERE id=$1`,
+        fulfillment_state=$4,order_status=$5,version=version+1,updated_at=now() WHERE id=$1`,
         [
           order.id,
           release ? 'PAID_REVIEW' : 'PAID',
           release ? 'RELEASED' : 'CONSUMED',
           release ? 'PAYMENT_REVIEW_REQUIRED' : 'AWAITING_CLINICAL_RELEASE',
+          release ? 'CANCELLED' : 'CONFIRMED',
         ],
       );
       if (!release)
@@ -728,6 +767,30 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
           'UPDATE inventory SET quantity=quantity-$2,updated_at=now() WHERE id=$1',
           [order.inventory_item_id, order.quantity],
         );
+      await this.tracking.event(
+        manager,
+        order.id,
+        'payment-received',
+        'PAID',
+        release
+          ? 'Payment received, but this order cannot be fulfilled. Contact support for payment resolution.'
+          : 'Payment verified.',
+        null,
+        order.order_status,
+      );
+      await this.tracking.event(
+        manager,
+        order.id,
+        release ? 'payment-review' : 'confirmed',
+        release ? 'CANCELLED' : 'CONFIRMED',
+        release
+          ? 'Order unavailable for fulfillment. Payment resolution is required; no refund has been confirmed.'
+          : 'Your purchase is confirmed.',
+        null,
+        order.order_status,
+        'payment-worker',
+        !release,
+      );
       return { status: release ? 'PAID_REVIEW' : 'PAID' };
     });
   }
@@ -786,8 +849,19 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     try {
       await this.db.transaction(async (manager) => {
         await this.lock(manager);
-        await manager.query(`UPDATE marketplace_orders SET reservation_state='RELEASED',payment_status='EXPIRED'
-          WHERE reservation_state='RESERVED' AND expires_at<=now()`);
+        const expired = await manager.query<
+          { id: string }[]
+        >(`UPDATE marketplace_orders SET reservation_state='RELEASED',payment_status='EXPIRED',
+          order_status='CANCELLED',version=version+1,updated_at=now()
+          WHERE reservation_state='RESERVED' AND expires_at<=now() RETURNING id`);
+        for (const row of expired)
+          await this.tracking.event(
+            manager,
+            row.id,
+            'reservation-released',
+            'CANCELLED',
+            'Payment reservation expired. Order cancelled.',
+          );
       });
       // Also keep verifying released transactions to detect late successful payments.
       const rows = await this.db.query<

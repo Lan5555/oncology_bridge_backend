@@ -25,6 +25,8 @@ export class Notification {
 
   @Column({ type: 'uuid', nullable: true })
   cold_chain_outbox_id!: string | null;
+  @Column({ type: 'uuid', nullable: true })
+  shipment_temperature_event_id!: string | null;
 
   @Column({
     default: false,

@@ -83,9 +83,11 @@ export const READ_DEFINITIONS: Record<OperationalResource, ReadDefinition> = {
     networkOnly: true,
   },
   prescriptions: {
-    from: 'prescriptions p JOIN medicines m ON m.id=p.drug_id JOIN hospitals h ON h.id=p.pharmacy_facility_id',
-    select: `p.id,p.display_id,p.patient_ref,p.drug_id,p.qty,p.icd10,p.tnm_stage,p.pharmacy_facility_id,
-      p.auth_status,p.order_stage,p.prescriber_id,p.created_at,p.updated_at,${FACILITY} facility,${MEDICINE} medicine`,
+    from: 'prescriptions p JOIN medicines m ON m.id=p.drug_id JOIN hospitals h ON h.id=p.pharmacy_facility_id LEFT JOIN users prescriber ON prescriber.id=p.prescriber_id',
+    select: `p.id,p.display_id,p.patient_ref,p.drug_id,p.qty,p.icd10,p.description,p.tnm_stage,p.insurer,p.pharmacy_facility_id,
+      p.auth_status,p.order_stage,p.prescriber_id,p.created_at,p.updated_at,${FACILITY} facility,
+      ${FACILITY} pharmacy,h.name pharmacy_name,${MEDICINE} medicine,
+      CASE WHEN prescriber.id IS NULL THEN NULL ELSE jsonb_build_object('id',prescriber.id,'name',concat_ws(' ',prescriber.first_name,prescriber.last_name)) END prescriber`,
     search:
       "concat_ws(' ',p.display_id,p.patient_ref,p.auth_status,p.order_stage,m.generic_name,m.brand_name,h.name)",
     scope: (p) => `p.pharmacy_facility_id=${p}`,

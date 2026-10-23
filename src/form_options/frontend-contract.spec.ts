@@ -24,6 +24,8 @@ import { OperationalReadsService } from '../operations/operational-reads.service
 import { PrescriptionsController } from '../prescriptions/prescriptions.controller';
 import { PrescriptionsService } from '../prescriptions/prescriptions.service';
 import { Prescription } from '../prescriptions/entities/prescription.entity';
+import { PrescriptionReviewController } from '../prescriptions/prescription-review.controller';
+import { PrescriptionReviewService } from '../prescriptions/prescription-review.service';
 import { OrderEvent } from '../prescriptions/entities/order-event.entity';
 import { Hospital } from '../hospital/entities/hospital.entity';
 import { User } from '../users/entities/user.entity';
@@ -83,6 +85,8 @@ const schemas = [
       active: { type: 'boolean' },
       account_type: text,
       verification_status: text,
+      first_name: text,
+      last_name: text,
     },
     relations: {
       hospital: {
@@ -133,6 +137,7 @@ const schemas = [
       display_id: text,
       patient_ref: text,
       icd10: text,
+      description: { ...text, nullable: true },
       tnm_stage: text,
       drug_id: { type: 'uuid' },
       qty: { type: 'int' },
@@ -140,6 +145,7 @@ const schemas = [
       pharmacy_facility_id: { type: 'uuid' },
       auth_status: text,
       order_stage: text,
+      version: { type: 'int', default: 1 },
       prescriber_id: { type: 'uuid' },
       created_at: { type: 'timestamptz', createDate: true },
       updated_at: { type: 'timestamptz', updateDate: true },
@@ -154,6 +160,10 @@ const schemas = [
       order_id: { type: 'uuid' },
       step: text,
       state: text,
+      actor_id: { type: 'uuid', nullable: true },
+      event_type: { ...text, nullable: true },
+      message: { ...text, nullable: true },
+      review_version: { type: 'int', nullable: true },
       at: { type: 'timestamptz', createDate: true },
     },
   }),
@@ -186,24 +196,36 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
       .send(body);
   beforeAll(async () => {
     pg = new PGlite();
-    await pg.exec(`CREATE TABLE hospitals(id uuid PRIMARY KEY,name text,city text,status text,facility_type text,deleted_at timestamptz);
+    await pg.exec(`CREATE TABLE hospitals(id uuid PRIMARY KEY,name text,city text,status text,facility_type text,deleted_at timestamptz,state text);
       CREATE TABLE roles(id int PRIMARY KEY,name text);
-      CREATE TABLE users(id uuid PRIMARY KEY,hospital_id uuid,role_id int,active boolean,account_type text,verification_status text);
+      CREATE TABLE users(id uuid PRIMARY KEY,hospital_id uuid,role_id int,active boolean,account_type text,verification_status text,first_name text DEFAULT 'Recorded',last_name text DEFAULT 'Clinician');
       CREATE TABLE role_permissions(id uuid DEFAULT gen_random_uuid(),role_id int,permission text);
       CREATE TABLE inventory_access_grants(id uuid,user_id uuid,facility_id uuid);
       CREATE TABLE verification_applications(id uuid,user_id uuid,status text,submitted_at timestamptz DEFAULT now());
-      CREATE TABLE medicines(id uuid PRIMARY KEY,generic_name text,gtin text,deleted_at timestamptz,catalog_facility_id uuid);
+      CREATE TABLE medicines(id uuid PRIMARY KEY,generic_name text,gtin text,deleted_at timestamptz,catalog_facility_id uuid,brand_name text,strength text,storage_temperature text);
       CREATE TABLE inventory(id uuid PRIMARY KEY,hospital_id uuid,medicine_id uuid,batch_number text,expiry_date date,quantity int,selling_unit text,status text,created_at timestamptz DEFAULT now());
       CREATE TABLE transfer_requests(id uuid PRIMARY KEY,inventory_id uuid,status text);
       CREATE TABLE prescriptions(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),display_id text UNIQUE,patient_ref text,icd10 text,tnm_stage text,drug_id uuid,qty int,insurer text,pharmacy_facility_id uuid,auth_status text,order_stage text,prescriber_id uuid,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());
       CREATE TABLE order_events(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),order_id uuid,step text,state text,at timestamptz DEFAULT now());
-      CREATE TABLE audit_logs(user_id uuid,action text,description text,ip_address text,object_type text);`);
+      CREATE TABLE audit_logs(id uuid,user_id uuid,action text,description text,ip_address text,object_type text,event_key uuid,object_id uuid,before_status text,after_status text,created_at timestamptz DEFAULT now());`);
     await pg.exec(
       'CREATE TABLE settings(key text PRIMARY KEY,value jsonb,updated_at timestamptz DEFAULT now())',
     );
     await pg.exec(
       readFileSync(
         resolve(process.cwd(), 'database/frontend-contract.sql'),
+        'utf8',
+      ),
+    );
+    await pg.exec(
+      readFileSync(
+        resolve(process.cwd(), 'database/prescription-review.sql'),
+        'utf8',
+      ),
+    );
+    await pg.exec(
+      readFileSync(
+        resolve(process.cwd(), 'database/prescription-description.sql'),
         'utf8',
       ),
     );
@@ -221,11 +243,17 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
       controllers: [
         FormOptionsController,
         PrescriptionsController,
+        PrescriptionReviewController,
         ReportsController,
         SettingsController,
       ],
       providers: [
         AuthGuard,
+        NetworkAdminGuard,
+        {
+          provide: PrescriptionReviewService,
+          useValue: new PrescriptionReviewService(db),
+        },
         { provide: DataSource, useValue: db },
         { provide: FormOptionsService, useValue: forms },
         { provide: PrescriptionsService, useValue: prescriptions },
@@ -234,7 +262,10 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
           provide: SettingsService,
           useValue: new SettingsService(db.getRepository(Setting)),
         },
-        { provide: OperationalReadsService, useValue: {} },
+        {
+          provide: OperationalReadsService,
+          useValue: new OperationalReadsService(db),
+        },
       ],
     })
       .overrideGuard(OperationalReadGuard)
@@ -261,14 +292,14 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
       'TRUNCATE hospitals,users,roles,role_permissions,inventory_access_grants,verification_applications,medicines,inventory,transfer_requests,prescriptions,order_events,audit_logs,form_options,settings CASCADE',
     );
     await sql(
-      `INSERT INTO hospitals VALUES ($1,'Clinic','Lagos','ACTIVE','CLINIC',NULL),($2,'Named pharmacy','Ikeja','ACTIVE','PHARMACY',NULL),($3,'Second pharmacy','Lagos','ACTIVE','PHARMACY',NULL),($4,'Unknown pharmacy','Lagos',NULL,'PHARMACY',NULL)`,
+      `INSERT INTO hospitals(id,name,city,status,facility_type,deleted_at) VALUES ($1,'Clinic','Lagos','ACTIVE','CLINIC',NULL),($2,'Named pharmacy','Ikeja','ACTIVE','PHARMACY',NULL),($3,'Second pharmacy','Lagos','ACTIVE','PHARMACY',NULL),($4,'Unknown pharmacy','Lagos',NULL,'PHARMACY',NULL)`,
       [id(1), id(2), id(3), id(4)],
     );
     await pg.exec(
       "INSERT INTO roles VALUES (1,'DOCTOR'),(2,'PHARMACIST'),(3,'ADMIN'); INSERT INTO role_permissions(role_id,permission) VALUES (1,'report.export'),(3,'report.export'),(3,'admin.access')",
     );
     await sql(
-      "INSERT INTO users VALUES ($1,$2,1,true,'DOCTOR','VERIFIED'),($3,$4,2,true,'PHARMACIST','VERIFIED'),($5,$6,2,true,'PHARMACY_STORE','VERIFIED'),($7,$2,3,true,NULL,'VERIFIED'),($8,$9,2,true,'PHARMACIST','VERIFIED')",
+      "INSERT INTO users(id,hospital_id,role_id,active,account_type,verification_status) VALUES ($1,$2,1,true,'DOCTOR','VERIFIED'),($3,$4,2,true,'PHARMACIST','VERIFIED'),($5,$6,2,true,'PHARMACY_STORE','VERIFIED'),($7,$2,3,true,NULL,'VERIFIED'),($8,$9,2,true,'PHARMACIST','VERIFIED')",
       [id(10), id(1), id(11), id(2), id(12), id(3), id(13), id(14), id(4)],
     );
     await pg.exec(
@@ -359,7 +390,32 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
       prescriber_id: id(10),
       insurer: 'reviewed-plan',
       qty: 2,
+      pharmacy: { id: id(2), name: 'Named pharmacy' },
+      pharmacy_name: 'Named pharmacy',
+      prescriber: { id: id(10), name: 'Recorded Clinician' },
     });
+    const refreshed = await get('/api/prescriptions').expect(200);
+    expect(refreshed.body.data.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: response.body.data.id,
+          patient_ref: 'patient-pseudonym',
+          icd10: 'C50.9',
+          insurer: 'reviewed-plan',
+          pharmacy: {
+            id: id(2),
+            name: 'Named pharmacy',
+            city: 'Ikeja',
+            state: null,
+            status: 'ACTIVE',
+          },
+          pharmacy_name: 'Named pharmacy',
+          prescriber: { id: id(10), name: 'Recorded Clinician' },
+          auth_status: 'Pending',
+          order_stage: 'Waiting',
+        }),
+      ]),
+    );
     expect(
       (await sql('SELECT count(*)::int count FROM order_events'))[0].count,
     ).toBe(1);
@@ -370,6 +426,428 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
     expect(
       (await sql('SELECT count(*)::int count FROM prescriptions'))[0].count,
     ).toBe(1);
+  });
+  it.each([
+    ' c50 ',
+    'c50.9',
+    ' C50.91\n',
+    ' d05.1 ',
+    'C50.999',
+    'C50.9 Breast cancer',
+  ])(
+    'normalizes ICD-10 code %j before validation and persistence',
+    async (icd10) => {
+      const response = await post('/api/prescriptions', {
+        ...prescription(),
+        icd10,
+      }).expect(201);
+      expect(response.body.data.icd10).toBe(icd10.trim().toUpperCase());
+      expect((await sql('SELECT icd10 FROM prescriptions'))[0].icd10).toBe(
+        icd10.trim().toUpperCase(),
+      );
+    },
+  );
+  it.each(
+    ['', '   ', null, 50, ['C50.9'], 'C'.repeat(201)].map((icd10) => [icd10]),
+  )('rejects empty, non-string or oversized ICD-10 input %j', async (icd10) => {
+    const response = await post('/api/prescriptions', {
+      ...prescription(),
+      icd10,
+    }).expect(422);
+    expect(response.body.message).toContain(
+      'Enter an ICD-10 value between 1 and 200 characters.',
+    );
+    expect(await sql('SELECT id FROM prescriptions')).toEqual([]);
+  });
+  it('normalizes ICD-10 updates and rejects malformed codes without changing the saved code', async () => {
+    const created = await post('/api/prescriptions', prescription()).expect(
+      201,
+    );
+    const url = `/api/prescriptions/${created.body.data.id}`;
+    await request(app.getHttpServer())
+      .patch(url)
+      .set('Authorization', token(11))
+      .send({ icd10: ' d05.1 ' })
+      .expect(200);
+    expect((await sql('SELECT icd10 FROM prescriptions'))[0].icd10).toBe(
+      'D05.1',
+    );
+    const invalid = await request(app.getHttpServer())
+      .patch(url)
+      .set('Authorization', token(11))
+      .send({ icd10: ['C50.9'] })
+      .expect(422);
+    expect(invalid.body.code).toBe('INVALID_ICD10');
+    expect((await sql('SELECT icd10 FROM prescriptions'))[0].icd10).toBe(
+      'D05.1',
+    );
+  });
+  const reviewAccess = async (review = true) => {
+    await sql(
+      "INSERT INTO role_permissions(role_id,permission) VALUES (3,'prescription.read')",
+    );
+    if (review)
+      await sql(
+        "INSERT INTO role_permissions(role_id,permission) VALUES (3,'prescription.review')",
+      );
+  };
+  const reviewGet = (url: string, n = 13) => get(url, n);
+  it('persists an optional description across creation, lists and review, and revisions change when it is edited', async () => {
+    await reviewAccess();
+    const created = (
+      await post('/api/prescriptions', {
+        ...prescription(),
+        description: '  Recorded prescription instructions.  ',
+      }).expect(201)
+    ).body.data;
+    expect(created.description).toBe('Recorded prescription instructions.');
+    expect(
+      (await get('/api/prescriptions').expect(200)).body.data.items[0]
+        .description,
+    ).toBe(created.description);
+    const url = `/admin/api/prescriptions/${created.id}`;
+    expect((await reviewGet(url).expect(200)).body.data.description).toBe(
+      created.description,
+    );
+    await request(app.getHttpServer())
+      .patch(`/api/prescriptions/${created.id}`)
+      .set('Authorization', token())
+      .send({ description: 'Changed instructions.' })
+      .expect(200);
+    expect((await reviewGet(url).expect(200)).body.data).toMatchObject({
+      description: 'Changed instructions.',
+      version: 2,
+    });
+    await post(
+      `${url}/decision`,
+      { decision: 'APPROVE', expectedVersion: 1, reason: 'Stale draft' },
+      13,
+    ).expect(409);
+    const reviewed = await post(
+      `${url}/decision`,
+      { decision: 'APPROVE', expectedVersion: 2, reason: 'Reviewed' },
+      13,
+    ).expect(200);
+    expect(reviewed.body.data.description).toBe('Changed instructions.');
+  });
+  it('allows missing/blank descriptions and rejects non-text or oversized descriptions', async () => {
+    for (const description of [undefined, '   ', null]) {
+      const created = await post('/api/prescriptions', {
+        ...prescription(),
+        description,
+      }).expect(201);
+      expect(created.body.data.description).toBeNull();
+    }
+    for (const description of [42, 'x'.repeat(2001)])
+      await post('/api/prescriptions', {
+        ...prescription(),
+        description,
+      }).expect(422);
+  });
+  it('enforces existing MFA requirements on prescription review routes', async () => {
+    await reviewAccess();
+    const previous = process.env.ADMIN_MFA_REQUIRED;
+    process.env.ADMIN_MFA_REQUIRED = 'true';
+    try {
+      await reviewGet('/admin/api/prescriptions').expect(403);
+      await request(app.getHttpServer())
+        .get('/admin/api/prescriptions')
+        .set('Authorization', `Bearer ${jwt.sign({ id: id(13), mfa: true })}`)
+        .expect(200);
+    } finally {
+      if (previous === undefined) delete process.env.ADMIN_MFA_REQUIRED;
+      else process.env.ADMIN_MFA_REQUIRED = previous;
+    }
+  });
+  it('returns saved prescription review fields, canonical legacy approvals, filters and authorized pagination', async () => {
+    await reviewAccess();
+    const created = (
+      await post('/api/prescriptions', prescription()).expect(201)
+    ).body.data;
+    const list = await reviewGet(
+      '/admin/api/prescriptions?authStatus=Pending&q=Named%20pharmacy&limit=1',
+    ).expect(200);
+    expect(list.body.data).toMatchObject({
+      items: [
+        {
+          id: created.id,
+          patient_ref: 'patient-pseudonym',
+          insurer: 'reviewed-plan',
+          pharmacy: { name: 'Named pharmacy' },
+          medicine: { name: 'Named medicine' },
+          prescriber: { name: 'Recorded Clinician' },
+        },
+      ],
+      pagination: { page: 1, limit: 1, total: 1, totalPages: 1 },
+    });
+    const detail = await reviewGet(
+      `/admin/api/prescriptions/${created.id}`,
+    ).expect(200);
+    expect(detail.body.data).toMatchObject({
+      version: 1,
+      allowedDecisions: ['APPROVE', 'REJECT'],
+      events: [
+        { type: 'Prescription Created', actorName: 'Recorded Clinician' },
+      ],
+    });
+    expect(JSON.stringify(detail.body)).not.toMatch(
+      /password|email|phone|payload|secret/i,
+    );
+    const empty = await reviewGet(
+      '/admin/api/prescriptions?q=not-present',
+    ).expect(200);
+    expect(empty.body.data).toEqual({
+      items: [],
+      pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+    });
+    await reviewGet('/admin/api/prescriptions?limit=101').expect(400);
+    await reviewGet('/admin/api/prescriptions?authStatus=Cleared').expect(400);
+    await sql("UPDATE prescriptions SET auth_status='Cleared' WHERE id=$1", [
+      created.id,
+    ]);
+    expect(
+      (
+        await reviewGet('/admin/api/prescriptions?authStatus=Approved').expect(
+          200,
+        )
+      ).body.data.items[0].auth_status,
+    ).toBe('Approved');
+    expect(
+      (await reviewGet(`/admin/api/prescriptions/${created.id}`).expect(200))
+        .body.data.allowedDecisions,
+    ).toEqual([]);
+  });
+  it('requires network scope and explicit read/review grants even for direct API calls', async () => {
+    const created = (
+      await post('/api/prescriptions', prescription()).expect(201)
+    ).body.data;
+    const url = `/admin/api/prescriptions/${created.id}`;
+    await request(app.getHttpServer()).get(url).expect(401);
+    await reviewGet(url, 10).expect(403);
+    await reviewGet(url).expect(403);
+    await reviewAccess(false);
+    expect(
+      (await reviewGet(url).expect(200)).body.data.allowedDecisions,
+    ).toEqual([]);
+    await post(
+      `${url}/decision`,
+      { decision: 'APPROVE', expectedVersion: 1, reason: 'Reviewed' },
+      13,
+    ).expect(403);
+    await sql(
+      "INSERT INTO role_permissions(role_id,permission) VALUES (3,'prescription.review')",
+    );
+    await sql("UPDATE roles SET name='FACILITY_ADMIN' WHERE id=3");
+    await reviewGet(url).expect(403);
+    await post(
+      `${url}/decision`,
+      { decision: 'APPROVE', expectedVersion: 1, reason: 'Reviewed' },
+      13,
+    ).expect(403);
+  });
+  it.each(['APPROVE', 'REJECT'])(
+    'records %s once without changing clinical, pharmacy or dispensing fields',
+    async (decision) => {
+      await reviewAccess();
+      const created = (
+        await post('/api/prescriptions', prescription()).expect(201)
+      ).body.data;
+      const url = `/admin/api/prescriptions/${created.id}`;
+      const response = await post(
+        `${url}/decision`,
+        {
+          decision,
+          expectedVersion: 1,
+          reason: '  Recorded local authorization review.  ',
+        },
+        13,
+      ).expect(200);
+      expect(response.body.data).toMatchObject({
+        version: 2,
+        auth_status: decision === 'APPROVE' ? 'Approved' : 'Rejected',
+        order_stage: 'Waiting',
+        patient_ref: created.patient_ref,
+        icd10: created.icd10,
+        insurer: created.insurer,
+        qty: created.qty,
+        pharmacy: { id: created.pharmacy_facility_id },
+        allowedDecisions: [],
+      });
+      expect(response.body.data.events).toHaveLength(2);
+      expect(response.body.data.events[1]).toMatchObject({
+        type: decision,
+        message: 'Recorded local authorization review.',
+        actorName: 'Recorded Clinician',
+      });
+      await post(
+        `${url}/decision`,
+        { decision, expectedVersion: 2, reason: 'Repeat' },
+        13,
+      ).expect(409);
+      expect(
+        await sql(
+          "SELECT id FROM audit_logs WHERE action='PRESCRIPTION_REVIEWED'",
+        ),
+      ).toHaveLength(1);
+      expect(
+        (await sql('SELECT quantity FROM inventory WHERE id=$1', [id(20)]))[0]
+          .quantity,
+      ).toBe(0);
+      const own = await get('/api/prescriptions').expect(200);
+      expect(own.body.data.items[0].auth_status).toBe(
+        decision === 'APPROVE' ? 'Approved' : 'Rejected',
+      );
+    },
+  );
+  it('serializes reviewers racing the same version into one decision and one conflict', async () => {
+    await reviewAccess();
+    const created = (
+      await post('/api/prescriptions', prescription()).expect(201)
+    ).body.data;
+    const results = await Promise.all(
+      ['APPROVE', 'REJECT'].map((decision) =>
+        post(
+          `/admin/api/prescriptions/${created.id}/decision`,
+          { decision, expectedVersion: 1, reason: 'Reviewed' },
+          13,
+        ),
+      ),
+    );
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(
+      await sql('SELECT id FROM order_events WHERE review_version IS NOT NULL'),
+    ).toHaveLength(1);
+    expect(
+      await sql(
+        "SELECT id FROM audit_logs WHERE action='PRESCRIPTION_REVIEWED'",
+      ),
+    ).toHaveLength(1);
+  });
+  it('protects generic PATCH against self-approval and protected-field writes and invalidates stale review drafts after clinical edits', async () => {
+    await reviewAccess();
+    const created = (
+      await post('/api/prescriptions', prescription()).expect(201)
+    ).body.data;
+    const patch = (body: object) =>
+      request(app.getHttpServer())
+        .patch(`/api/prescriptions/${created.id}`)
+        .set('Authorization', token())
+        .send(body);
+    for (const body of [
+      { auth_status: 'Approved' },
+      { order_stage: 'Dispensed' },
+      { version: 99 },
+      { prescriber_id: id(11) },
+      { pharmacy_facility_id: id(3) },
+    ])
+      await patch(body).expect(403);
+    await patch({ icd10: ' d05.1 ' }).expect(200);
+    expect(
+      (await reviewGet(`/admin/api/prescriptions/${created.id}`).expect(200))
+        .body.data.version,
+    ).toBe(2);
+    await post(
+      `/admin/api/prescriptions/${created.id}/decision`,
+      { decision: 'APPROVE', expectedVersion: 1, reason: 'Old draft' },
+      13,
+    ).expect(409);
+    await post(
+      `/admin/api/prescriptions/${created.id}/decision`,
+      {
+        decision: 'APPROVE',
+        expectedVersion: 2,
+        reason: 'Reviewed current record',
+      },
+      13,
+    ).expect(200);
+    await patch({ icd10: 'changed' }).expect(409);
+  });
+  it.each(['medicine', 'pharmacy', 'prescriber', 'stage'])(
+    'withholds decisions and rejects changed eligibility: %s',
+    async (kind) => {
+      await reviewAccess();
+      const created = (
+        await post('/api/prescriptions', prescription()).expect(201)
+      ).body.data;
+      if (kind === 'medicine')
+        await sql('UPDATE medicines SET deleted_at=now()');
+      if (kind === 'pharmacy')
+        await sql("UPDATE hospitals SET status='SUSPENDED' WHERE id=$1", [
+          id(2),
+        ]);
+      if (kind === 'prescriber')
+        await sql('UPDATE users SET active=false WHERE id=$1', [id(10)]);
+      if (kind === 'stage')
+        await sql("UPDATE prescriptions SET order_stage='Dispensed'");
+      const detail = (
+        await reviewGet(`/admin/api/prescriptions/${created.id}`).expect(200)
+      ).body.data;
+      expect(detail.allowedDecisions).toEqual([]);
+      await post(
+        `/admin/api/prescriptions/${created.id}/decision`,
+        {
+          decision: 'APPROVE',
+          expectedVersion: detail.version,
+          reason: 'Review',
+        },
+        13,
+      ).expect(409);
+      expect(
+        await sql(
+          "SELECT id FROM audit_logs WHERE action='PRESCRIPTION_REVIEWED'",
+        ),
+      ).toEqual([]);
+    },
+  );
+  it('validates decision bodies, missing records and rolls back decisions if audit persistence fails', async () => {
+    await reviewAccess();
+    const created = (
+      await post('/api/prescriptions', prescription()).expect(201)
+    ).body.data;
+    const url = `/admin/api/prescriptions/${created.id}/decision`;
+    for (const body of [
+      { decision: 'APPROVE', expectedVersion: 1, reason: ' ' },
+      { decision: 'UNKNOWN', expectedVersion: 1, reason: 'Review' },
+      { decision: 'APPROVE', expectedVersion: 0, reason: 'Review' },
+      {
+        decision: 'APPROVE',
+        expectedVersion: 1,
+        reason: 'Review',
+        auth_status: 'Approved',
+      },
+    ])
+      await post(url, body, 13).expect(400);
+    await reviewGet(`/admin/api/prescriptions/${id(999)}`).expect(404);
+    await pg.exec(
+      `CREATE FUNCTION fail_review_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit unavailable'; END $$; CREATE TRIGGER fail_review_audit BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION fail_review_audit();`,
+    );
+    try {
+      await post(
+        url,
+        { decision: 'APPROVE', expectedVersion: 1, reason: 'Review' },
+        13,
+      ).expect(500);
+      expect(
+        (
+          await sql(
+            'SELECT auth_status,version FROM prescriptions WHERE id=$1',
+            [created.id],
+          )
+        )[0],
+      ).toMatchObject({ auth_status: 'Pending', version: 1 });
+      expect(
+        await sql(
+          'SELECT id FROM order_events WHERE review_version IS NOT NULL',
+        ),
+      ).toEqual([]);
+    } finally {
+      await pg.exec(
+        'DROP TRIGGER fail_review_audit ON audit_logs; DROP FUNCTION fail_review_audit()',
+      );
+    }
+    await expect(
+      sql("UPDATE order_events SET step='overwrite'"),
+    ).rejects.toThrow();
   });
   it('rechecks managed choices, medicine state, and pharmacy eligibility at submission', async () => {
     await sql(
