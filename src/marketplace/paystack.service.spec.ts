@@ -1,3 +1,4 @@
+import { matchers } from '../../test/matchers';
 import { ConfigService } from '@nestjs/config';
 import { createHmac } from 'node:crypto';
 import { PaystackService } from './paystack.service';
@@ -29,20 +30,21 @@ describe('Paystack boundary', () => {
   it('initializes from server values using an encoded, allowlisted callback', async () => {
     const fetcher = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
-      json: async () => ({
-        status: true,
-        data: {
-          reference: 'persisted',
-          authorization_url: 'https://checkout.paystack.com/test',
-        },
-      }),
+      json: () =>
+        Promise.resolve({
+          status: true,
+          data: {
+            reference: 'persisted',
+            authorization_url: 'https://checkout.paystack.com/test',
+          },
+        }),
     } as Response);
     await expect(
       service.initialize('buyer@example.test', 12345, 'persisted', 'OB-1/?'),
     ).resolves.toBe('https://checkout.paystack.com/test');
     expect(fetcher).toHaveBeenCalledWith(
       'https://api.paystack.co/transaction/initialize',
-      expect.objectContaining({
+      matchers.objectContaining({
         body: JSON.stringify({
           email: 'buyer@example.test',
           amount: 12345,
@@ -52,6 +54,8 @@ describe('Paystack boundary', () => {
         }),
       }),
     );
+
+    return Promise.resolve();
   });
   it.each([
     'http://checkout.paystack.com/test',
@@ -60,14 +64,17 @@ describe('Paystack boundary', () => {
   ])('rejects unsafe checkout URL %s', async (url) => {
     jest.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
-      json: async () => ({
-        status: true,
-        data: { reference: 'ref', authorization_url: url },
-      }),
+      json: () =>
+        Promise.resolve({
+          status: true,
+          data: { reference: 'ref', authorization_url: url },
+        }),
     } as Response);
     await expect(
       service.initialize('buyer@example.test', 100, 'ref', 'OB-1'),
     ).rejects.toMatchObject({ status: 502 });
+
+    return Promise.resolve();
   });
   it('rejects provider failure without a fake checkout URL', async () => {
     jest

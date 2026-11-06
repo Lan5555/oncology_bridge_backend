@@ -75,6 +75,7 @@ export class Gs1ImageDecoderService {
       : null;
 
     return {
+      rawBarcode: raw,
       identifiers: {
         ...identifiers,
         expiry,

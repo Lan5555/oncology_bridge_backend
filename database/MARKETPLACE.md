@@ -49,3 +49,7 @@ Assign only to the explicitly approved seller role. For deployment via SQL, data
 Login returns data.user.permissions; refresh returns data.user.permissions and reissues token permission claims from current database grants. GET /api/me returns data.permissions. Refresh the session after assignment/revocation to update controls. The listing endpoint checks current database permissions immediately, independently of stale JWT claims.
 
 Frontend listing controls should check permissions.includes('marketplace.list') alongside PHARMACY_STORE seller eligibility. The key alone grants no cross-facility ownership rights. Verification approval, active membership/facility, PHARMACY_STORE account type, eligible unexpired stock, and ownership of the selected batch remain required. Network administrators do not gain an implicit seller bypass.
+
+## Additional payment provider
+
+Flutterwave Standard v3 is supported alongside Paystack. Apply `marketplace-payment-providers.sql` before deploying provider selection. See [FLUTTERWAVE-CHECKOUT.md](FLUTTERWAVE-CHECKOUT.md) for server settings, webhook configuration, frontend contracts and acceptance steps.

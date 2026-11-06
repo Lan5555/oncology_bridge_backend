@@ -18,6 +18,7 @@ import { Request } from 'express';
 import { AuthGuard } from '../guards/auth.guard';
 import { MedicineService } from './medicine.service';
 import { CreateMedicineDto } from './dto/create-medicine.dto';
+import { BulkCreateMedicinesDto } from './dto/bulk-create-medicines.dto';
 import { MedicineCatalogGuard } from '../guards/medicine-catalog.guard';
 import { PatchMedicineCatalogDto } from './dto/patch-medicine-catalog.dto';
 
@@ -38,6 +39,12 @@ export class MedicineController {
     @Req() req: CatalogRequest,
   ) {
     return this.medicineService.create(createMedicineDto, req.user!.id);
+  }
+
+  @Post('bulk')
+  @UseGuards(MedicineCatalogGuard)
+  createBulk(@Body() dto: BulkCreateMedicinesDto, @Req() req: CatalogRequest) {
+    return this.medicineService.createBulk(dto, req.user!.id);
   }
 
   @Get() findAll(

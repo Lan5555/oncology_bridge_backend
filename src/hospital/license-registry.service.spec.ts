@@ -1,3 +1,4 @@
+import { matchers } from '../../test/matchers';
 import { LicenseRegistryService } from './license-registry.service';
 import { AdminIntegrationsService } from '../admin/admin-integrations.service';
 
@@ -79,10 +80,10 @@ describe('server registry adapter', () => {
     const outcome = await service.lookup(input);
     expect(fetcher).toHaveBeenCalledWith(
       'https://registry.example.test/lookup',
-      expect.objectContaining({
+      matchers.objectContaining({
         method: 'POST',
         redirect: 'error',
-        headers: expect.objectContaining({
+        headers: matchers.objectContaining({
           Authorization: 'Bearer SERVER-SECRET',
         }),
         body: JSON.stringify(query),

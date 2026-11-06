@@ -64,7 +64,7 @@ export class NotificationService {
     );
   }
   async markRead(id: string) {
-    return this.update(id, { read: true } as UpdateNotificationDto);
+    return this.update(id, { read: true });
   }
   async remove(id: string) {
     const n = await this.notifications.findOneBy({ id });

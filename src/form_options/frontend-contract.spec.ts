@@ -1,4 +1,6 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call -- Supertest JSON response bodies are inspected by assertions. */
+import { matchers } from '../../test/matchers';
+import { jsonAt } from '../../test/json-response';
+
 import { PGlite } from '@electric-sql/pglite';
 import { DataSource, EntitySchema } from 'typeorm';
 import { Test } from '@nestjs/testing';
@@ -338,18 +340,23 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
         200,
       );
       expect(response.headers['cache-control']).toBe('private, no-store');
-      expect(response.body.data.context).toBe(context);
-      expect(response.body.data.options[group]).toContainEqual(
-        expect.objectContaining({ value }),
-      );
+      expect(jsonAt(response.body, 'data', 'context')).toBe(context);
+      expect(
+        jsonAt(jsonAt(response.body, 'data', 'options'), group),
+      ).toContainEqual(matchers.objectContaining({ value }));
       if (context !== 'reports') {
         await sql('UPDATE form_options SET active=false WHERE context=$1', [
           context,
         ]);
         expect(
-          (await get(`/api/form-options?context=${context}`)).body.data.options[
-            group
-          ],
+          jsonAt(
+            jsonAt(
+              (await get(`/api/form-options?context=${context}`)).body,
+              'data',
+              'options',
+            ),
+            group,
+          ),
         ).toEqual([]);
       }
     },
@@ -358,26 +365,43 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
     const first = await get(
       '/api/prescriptions/pharmacies?page=1&limit=1',
     ).expect(200);
-    expect(first.body.data.pagination).toEqual({ page: 1, limit: 1, total: 2 });
-    expect(first.body.data.items[0]).toMatchObject({
+    expect(jsonAt(first.body, 'data', 'pagination')).toEqual({
+      page: 1,
+      limit: 1,
+      total: 2,
+    });
+    expect(jsonAt(first.body, 'data', 'items', 0)).toMatchObject({
       id: id(2),
       name: 'Named pharmacy',
       status: 'ACTIVE',
       verified: true,
     });
     expect(
-      (await get('/api/prescriptions/pharmacies?page=2&limit=1')).body.data
-        .items[0].id,
+      jsonAt(
+        (await get('/api/prescriptions/pharmacies?page=2&limit=1')).body,
+        'data',
+        'items',
+        0,
+        'id',
+      ),
     ).toBe(id(3));
     expect(
-      (await get('/api/prescriptions/pharmacies?page=3&limit=1')).body.data
-        .items,
+      jsonAt(
+        (await get('/api/prescriptions/pharmacies?page=3&limit=1')).body,
+        'data',
+        'items',
+      ),
     ).toEqual([]);
     await sql("UPDATE users SET verification_status='REJECTED' WHERE id=$1", [
       id(12),
     ]);
     expect(
-      (await get('/api/prescriptions/pharmacies')).body.data.pagination.total,
+      jsonAt(
+        (await get('/api/prescriptions/pharmacies')).body,
+        'data',
+        'pagination',
+        'total',
+      ),
     ).toBe(1);
     await get('/api/prescriptions/pharmacies', 11).expect(403);
   });
@@ -385,7 +409,7 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
     const response = await post('/api/prescriptions', prescription()).expect(
       201,
     );
-    expect(response.body.data).toMatchObject({
+    expect(jsonAt(response.body, 'data')).toMatchObject({
       pharmacy_facility_id: id(2),
       prescriber_id: id(10),
       insurer: 'reviewed-plan',
@@ -395,10 +419,10 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
       prescriber: { id: id(10), name: 'Recorded Clinician' },
     });
     const refreshed = await get('/api/prescriptions').expect(200);
-    expect(refreshed.body.data.items).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: response.body.data.id,
+    expect(jsonAt(refreshed.body, 'data', 'items')).toEqual(
+      matchers.arrayContaining([
+        matchers.objectContaining({
+          id: jsonAt(response.body, 'data', 'id'),
           patient_ref: 'patient-pseudonym',
           icd10: 'C50.9',
           insurer: 'reviewed-plan',
@@ -441,7 +465,9 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
         ...prescription(),
         icd10,
       }).expect(201);
-      expect(response.body.data.icd10).toBe(icd10.trim().toUpperCase());
+      expect(jsonAt(response.body, 'data', 'icd10')).toBe(
+        icd10.trim().toUpperCase(),
+      );
       expect((await sql('SELECT icd10 FROM prescriptions'))[0].icd10).toBe(
         icd10.trim().toUpperCase(),
       );
@@ -454,7 +480,7 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
       ...prescription(),
       icd10,
     }).expect(422);
-    expect(response.body.message).toContain(
+    expect(jsonAt(response.body, 'message')).toContain(
       'Enter an ICD-10 value between 1 and 200 characters.',
     );
     expect(await sql('SELECT id FROM prescriptions')).toEqual([]);
@@ -463,7 +489,7 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
     const created = await post('/api/prescriptions', prescription()).expect(
       201,
     );
-    const url = `/api/prescriptions/${created.body.data.id}`;
+    const url = `/api/prescriptions/${String(jsonAt(created.body, 'data', 'id'))}`;
     await request(app.getHttpServer())
       .patch(url)
       .set('Authorization', token(11))
@@ -477,7 +503,7 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
       .set('Authorization', token(11))
       .send({ icd10: ['C50.9'] })
       .expect(422);
-    expect(invalid.body.code).toBe('INVALID_ICD10');
+    expect(jsonAt(invalid.body, 'code')).toBe('INVALID_ICD10');
     expect((await sql('SELECT icd10 FROM prescriptions'))[0].icd10).toBe(
       'D05.1',
     );
@@ -494,27 +520,39 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
   const reviewGet = (url: string, n = 13) => get(url, n);
   it('persists an optional description across creation, lists and review, and revisions change when it is edited', async () => {
     await reviewAccess();
-    const created = (
-      await post('/api/prescriptions', {
-        ...prescription(),
-        description: '  Recorded prescription instructions.  ',
-      }).expect(201)
-    ).body.data;
-    expect(created.description).toBe('Recorded prescription instructions.');
-    expect(
-      (await get('/api/prescriptions').expect(200)).body.data.items[0]
-        .description,
-    ).toBe(created.description);
-    const url = `/admin/api/prescriptions/${created.id}`;
-    expect((await reviewGet(url).expect(200)).body.data.description).toBe(
-      created.description,
+    const created = jsonAt(
+      (
+        await post('/api/prescriptions', {
+          ...prescription(),
+          description: '  Recorded prescription instructions.  ',
+        }).expect(201)
+      ).body,
+      'data',
     );
+    expect(jsonAt(created, 'description')).toBe(
+      'Recorded prescription instructions.',
+    );
+    expect(
+      jsonAt(
+        (await get('/api/prescriptions').expect(200)).body,
+        'data',
+        'items',
+        0,
+        'description',
+      ),
+    ).toBe(jsonAt(created, 'description'));
+    const url = `/admin/api/prescriptions/${String(jsonAt(created, 'id'))}`;
+    expect(
+      jsonAt((await reviewGet(url).expect(200)).body, 'data', 'description'),
+    ).toBe(jsonAt(created, 'description'));
     await request(app.getHttpServer())
-      .patch(`/api/prescriptions/${created.id}`)
+      .patch(`/api/prescriptions/${String(jsonAt(created, 'id'))}`)
       .set('Authorization', token())
       .send({ description: 'Changed instructions.' })
       .expect(200);
-    expect((await reviewGet(url).expect(200)).body.data).toMatchObject({
+    expect(
+      jsonAt((await reviewGet(url).expect(200)).body, 'data'),
+    ).toMatchObject({
       description: 'Changed instructions.',
       version: 2,
     });
@@ -528,7 +566,9 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
       { decision: 'APPROVE', expectedVersion: 2, reason: 'Reviewed' },
       13,
     ).expect(200);
-    expect(reviewed.body.data.description).toBe('Changed instructions.');
+    expect(jsonAt(reviewed.body, 'data', 'description')).toBe(
+      'Changed instructions.',
+    );
   });
   it('allows missing/blank descriptions and rejects non-text or oversized descriptions', async () => {
     for (const description of [undefined, '   ', null]) {
@@ -536,7 +576,7 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
         ...prescription(),
         description,
       }).expect(201);
-      expect(created.body.data.description).toBeNull();
+      expect(jsonAt(created.body, 'data', 'description')).toBeNull();
     }
     for (const description of [42, 'x'.repeat(2001)])
       await post('/api/prescriptions', {
@@ -561,16 +601,17 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
   });
   it('returns saved prescription review fields, canonical legacy approvals, filters and authorized pagination', async () => {
     await reviewAccess();
-    const created = (
-      await post('/api/prescriptions', prescription()).expect(201)
-    ).body.data;
+    const created = jsonAt(
+      (await post('/api/prescriptions', prescription()).expect(201)).body,
+      'data',
+    );
     const list = await reviewGet(
       '/admin/api/prescriptions?authStatus=Pending&q=Named%20pharmacy&limit=1',
     ).expect(200);
-    expect(list.body.data).toMatchObject({
+    expect(jsonAt(list.body, 'data')).toMatchObject({
       items: [
         {
-          id: created.id,
+          id: jsonAt(created, 'id'),
           patient_ref: 'patient-pseudonym',
           insurer: 'reviewed-plan',
           pharmacy: { name: 'Named pharmacy' },
@@ -581,9 +622,9 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
       pagination: { page: 1, limit: 1, total: 1, totalPages: 1 },
     });
     const detail = await reviewGet(
-      `/admin/api/prescriptions/${created.id}`,
+      `/admin/api/prescriptions/${String(jsonAt(created, 'id'))}`,
     ).expect(200);
-    expect(detail.body.data).toMatchObject({
+    expect(jsonAt(detail.body, 'data')).toMatchObject({
       version: 1,
       allowedDecisions: ['APPROVE', 'REJECT'],
       events: [
@@ -596,38 +637,56 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
     const empty = await reviewGet(
       '/admin/api/prescriptions?q=not-present',
     ).expect(200);
-    expect(empty.body.data).toEqual({
+    expect(jsonAt(empty.body, 'data')).toEqual({
       items: [],
       pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
     });
     await reviewGet('/admin/api/prescriptions?limit=101').expect(400);
     await reviewGet('/admin/api/prescriptions?authStatus=Cleared').expect(400);
     await sql("UPDATE prescriptions SET auth_status='Cleared' WHERE id=$1", [
-      created.id,
+      jsonAt(created, 'id'),
     ]);
     expect(
-      (
-        await reviewGet('/admin/api/prescriptions?authStatus=Approved').expect(
-          200,
-        )
-      ).body.data.items[0].auth_status,
+      jsonAt(
+        (
+          await reviewGet(
+            '/admin/api/prescriptions?authStatus=Approved',
+          ).expect(200)
+        ).body,
+        'data',
+        'items',
+        0,
+        'auth_status',
+      ),
     ).toBe('Approved');
     expect(
-      (await reviewGet(`/admin/api/prescriptions/${created.id}`).expect(200))
-        .body.data.allowedDecisions,
+      jsonAt(
+        (
+          await reviewGet(
+            `/admin/api/prescriptions/${String(jsonAt(created, 'id'))}`,
+          ).expect(200)
+        ).body,
+        'data',
+        'allowedDecisions',
+      ),
     ).toEqual([]);
   });
   it('requires network scope and explicit read/review grants even for direct API calls', async () => {
-    const created = (
-      await post('/api/prescriptions', prescription()).expect(201)
-    ).body.data;
-    const url = `/admin/api/prescriptions/${created.id}`;
+    const created = jsonAt(
+      (await post('/api/prescriptions', prescription()).expect(201)).body,
+      'data',
+    );
+    const url = `/admin/api/prescriptions/${String(jsonAt(created, 'id'))}`;
     await request(app.getHttpServer()).get(url).expect(401);
     await reviewGet(url, 10).expect(403);
     await reviewGet(url).expect(403);
     await reviewAccess(false);
     expect(
-      (await reviewGet(url).expect(200)).body.data.allowedDecisions,
+      jsonAt(
+        (await reviewGet(url).expect(200)).body,
+        'data',
+        'allowedDecisions',
+      ),
     ).toEqual([]);
     await post(
       `${url}/decision`,
@@ -649,10 +708,11 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
     'records %s once without changing clinical, pharmacy or dispensing fields',
     async (decision) => {
       await reviewAccess();
-      const created = (
-        await post('/api/prescriptions', prescription()).expect(201)
-      ).body.data;
-      const url = `/admin/api/prescriptions/${created.id}`;
+      const created = jsonAt(
+        (await post('/api/prescriptions', prescription()).expect(201)).body,
+        'data',
+      );
+      const url = `/admin/api/prescriptions/${String(jsonAt(created, 'id'))}`;
       const response = await post(
         `${url}/decision`,
         {
@@ -662,19 +722,19 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
         },
         13,
       ).expect(200);
-      expect(response.body.data).toMatchObject({
+      expect(jsonAt(response.body, 'data')).toMatchObject({
         version: 2,
         auth_status: decision === 'APPROVE' ? 'Approved' : 'Rejected',
         order_stage: 'Waiting',
-        patient_ref: created.patient_ref,
-        icd10: created.icd10,
-        insurer: created.insurer,
-        qty: created.qty,
-        pharmacy: { id: created.pharmacy_facility_id },
+        patient_ref: jsonAt(created, 'patient_ref'),
+        icd10: jsonAt(created, 'icd10'),
+        insurer: jsonAt(created, 'insurer'),
+        qty: jsonAt(created, 'qty'),
+        pharmacy: { id: jsonAt(created, 'pharmacy_facility_id') },
         allowedDecisions: [],
       });
-      expect(response.body.data.events).toHaveLength(2);
-      expect(response.body.data.events[1]).toMatchObject({
+      expect(jsonAt(response.body, 'data', 'events')).toHaveLength(2);
+      expect(jsonAt(response.body, 'data', 'events', 1)).toMatchObject({
         type: decision,
         message: 'Recorded local authorization review.',
         actorName: 'Recorded Clinician',
@@ -694,20 +754,21 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
           .quantity,
       ).toBe(0);
       const own = await get('/api/prescriptions').expect(200);
-      expect(own.body.data.items[0].auth_status).toBe(
+      expect(jsonAt(own.body, 'data', 'items', 0, 'auth_status')).toBe(
         decision === 'APPROVE' ? 'Approved' : 'Rejected',
       );
     },
   );
   it('serializes reviewers racing the same version into one decision and one conflict', async () => {
     await reviewAccess();
-    const created = (
-      await post('/api/prescriptions', prescription()).expect(201)
-    ).body.data;
+    const created = jsonAt(
+      (await post('/api/prescriptions', prescription()).expect(201)).body,
+      'data',
+    );
     const results = await Promise.all(
       ['APPROVE', 'REJECT'].map((decision) =>
         post(
-          `/admin/api/prescriptions/${created.id}/decision`,
+          `/admin/api/prescriptions/${String(jsonAt(created, 'id'))}/decision`,
           { decision, expectedVersion: 1, reason: 'Reviewed' },
           13,
         ),
@@ -725,12 +786,13 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
   });
   it('protects generic PATCH against self-approval and protected-field writes and invalidates stale review drafts after clinical edits', async () => {
     await reviewAccess();
-    const created = (
-      await post('/api/prescriptions', prescription()).expect(201)
-    ).body.data;
+    const created = jsonAt(
+      (await post('/api/prescriptions', prescription()).expect(201)).body,
+      'data',
+    );
     const patch = (body: object) =>
       request(app.getHttpServer())
-        .patch(`/api/prescriptions/${created.id}`)
+        .patch(`/api/prescriptions/${String(jsonAt(created, 'id'))}`)
         .set('Authorization', token())
         .send(body);
     for (const body of [
@@ -743,16 +805,23 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
       await patch(body).expect(403);
     await patch({ icd10: ' d05.1 ' }).expect(200);
     expect(
-      (await reviewGet(`/admin/api/prescriptions/${created.id}`).expect(200))
-        .body.data.version,
+      jsonAt(
+        (
+          await reviewGet(
+            `/admin/api/prescriptions/${String(jsonAt(created, 'id'))}`,
+          ).expect(200)
+        ).body,
+        'data',
+        'version',
+      ),
     ).toBe(2);
     await post(
-      `/admin/api/prescriptions/${created.id}/decision`,
+      `/admin/api/prescriptions/${String(jsonAt(created, 'id'))}/decision`,
       { decision: 'APPROVE', expectedVersion: 1, reason: 'Old draft' },
       13,
     ).expect(409);
     await post(
-      `/admin/api/prescriptions/${created.id}/decision`,
+      `/admin/api/prescriptions/${String(jsonAt(created, 'id'))}/decision`,
       {
         decision: 'APPROVE',
         expectedVersion: 2,
@@ -766,9 +835,10 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
     'withholds decisions and rejects changed eligibility: %s',
     async (kind) => {
       await reviewAccess();
-      const created = (
-        await post('/api/prescriptions', prescription()).expect(201)
-      ).body.data;
+      const created = jsonAt(
+        (await post('/api/prescriptions', prescription()).expect(201)).body,
+        'data',
+      );
       if (kind === 'medicine')
         await sql('UPDATE medicines SET deleted_at=now()');
       if (kind === 'pharmacy')
@@ -779,15 +849,20 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
         await sql('UPDATE users SET active=false WHERE id=$1', [id(10)]);
       if (kind === 'stage')
         await sql("UPDATE prescriptions SET order_stage='Dispensed'");
-      const detail = (
-        await reviewGet(`/admin/api/prescriptions/${created.id}`).expect(200)
-      ).body.data;
-      expect(detail.allowedDecisions).toEqual([]);
+      const detail = jsonAt(
+        (
+          await reviewGet(
+            `/admin/api/prescriptions/${String(jsonAt(created, 'id'))}`,
+          ).expect(200)
+        ).body,
+        'data',
+      );
+      expect(jsonAt(detail, 'allowedDecisions')).toEqual([]);
       await post(
-        `/admin/api/prescriptions/${created.id}/decision`,
+        `/admin/api/prescriptions/${String(jsonAt(created, 'id'))}/decision`,
         {
           decision: 'APPROVE',
-          expectedVersion: detail.version,
+          expectedVersion: jsonAt(detail, 'version'),
           reason: 'Review',
         },
         13,
@@ -801,10 +876,11 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
   );
   it('validates decision bodies, missing records and rolls back decisions if audit persistence fails', async () => {
     await reviewAccess();
-    const created = (
-      await post('/api/prescriptions', prescription()).expect(201)
-    ).body.data;
-    const url = `/admin/api/prescriptions/${created.id}/decision`;
+    const created = jsonAt(
+      (await post('/api/prescriptions', prescription()).expect(201)).body,
+      'data',
+    );
+    const url = `/admin/api/prescriptions/${String(jsonAt(created, 'id'))}/decision`;
     for (const body of [
       { decision: 'APPROVE', expectedVersion: 1, reason: ' ' },
       { decision: 'UNKNOWN', expectedVersion: 1, reason: 'Review' },
@@ -831,7 +907,7 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
         (
           await sql(
             'SELECT auth_status,version FROM prescriptions WHERE id=$1',
-            [created.id],
+            [jsonAt(created, 'id')],
           )
         )[0],
       ).toMatchObject({ auth_status: 'Pending', version: 1 });
@@ -854,7 +930,7 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
       "UPDATE form_options SET active=false WHERE context='prescription'",
     );
     const denied = await post('/api/prescriptions', prescription()).expect(422);
-    expect(denied.body.code).toBe('OPTION_UNAVAILABLE');
+    expect(jsonAt(denied.body, 'code')).toBe('OPTION_UNAVAILABLE');
     await sql(
       "UPDATE form_options SET active=true WHERE context='prescription'",
     );
@@ -886,7 +962,7 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
     async (type) => {
       const response = await post('/api/reports/export', { type }).expect(201);
       expect(response.headers['cache-control']).toBe('private, no-store');
-      const data = response.body.data as {
+      const data = jsonAt(response.body, 'data') as {
         contentBase64: string;
         fileName: string;
         mimeType: string;
@@ -939,13 +1015,15 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
       { type: 'CSV' },
       13,
     ).expect(201);
-    expect(network.body.data.csv).toContain('OTHER-LOT');
+    expect(jsonAt(network.body, 'data', 'csv')).toContain('OTHER-LOT');
     const empty = await post('/api/reports/export', {
       type: 'CSV',
       from: '2000-01-01',
       to: '2000-01-01',
     }).expect(201);
-    expect(empty.body.data.csv.split('\r\n')).toHaveLength(1);
+    expect(
+      String(jsonAt(empty.body, 'data', 'csv')).split('\r\n'),
+    ).toHaveLength(1);
     await sql("DELETE FROM role_permissions WHERE permission='report.export'");
     await get('/api/form-options?context=reports').expect(403);
     await post('/api/reports/export', { type: 'CSV' }).expect(403);
@@ -982,7 +1060,7 @@ describe('frontend contract with JWT sessions and PostgreSQL records', () => {
     const response = await get('/api/form-options?context=settings').expect(
       503,
     );
-    expect(response.body.code).toBe('OPTIONS_CONFIGURATION_INVALID');
+    expect(jsonAt(response.body, 'code')).toBe('OPTIONS_CONFIGURATION_INVALID');
   });
   it('retains required network MFA checks for exports and option metadata', async () => {
     const previous = process.env.ADMIN_MFA_REQUIRED;

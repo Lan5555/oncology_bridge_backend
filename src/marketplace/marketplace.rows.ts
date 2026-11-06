@@ -61,6 +61,7 @@ export interface PrescriptionRow {
   order_stage: string;
 }
 export interface OrderRow {
+  payment_provider: 'PAYSTACK' | 'FLUTTERWAVE';
   order_status: string;
   version: number;
   id: string;

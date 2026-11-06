@@ -1,3 +1,4 @@
+import { jsonAt } from '../../test/json-response';
 import { PGlite } from '@electric-sql/pglite';
 import { Test } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
@@ -29,9 +30,19 @@ const id = (n: number) =>
 describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () => {
   let pg: PGlite, app: INestApplication, jwt: JwtService;
   let fail = false;
-  const actors = new Map<string, any>();
-  const sql = async (query: string, args: any[] = []) =>
-    (await pg.query(query, args)).rows as any[];
+  const actors = new Map<
+    string,
+    {
+      id: string;
+      active: boolean;
+      verification_status: string;
+      account_type: string;
+      role: { id: number; name: string };
+      hospital: { id: string; status: string } | null;
+    }
+  >();
+  const sql = async (query: string, args: unknown[] = []) =>
+    (await pg.query<Record<string, unknown>>(query, args)).rows;
   beforeAll(async () => {
     pg = new PGlite();
     await pg.exec(`
@@ -56,40 +67,58 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
         'utf8',
       ),
     );
-    const getRepository = (entity: unknown): any => {
+    const getRepository = (entity: unknown) => {
       if (entity === User)
-        return { findOne: async (opts: any) => actors.get(opts.where.id) };
+        return {
+          findOne: (opts: { where: { id: string } }) =>
+            Promise.resolve(actors.get(opts.where.id)),
+        };
       if (entity === RolePermission)
         return {
-          findBy: async (opts: any) =>
+          findBy: (opts: { role_id: number }) =>
             sql('SELECT permission FROM role_permissions WHERE role_id=$1', [
               opts.role_id,
             ]),
         };
       if (entity === VerificationApplication)
-        return { findOne: async () => null };
+        return { findOne: () => Promise.resolve(null) };
       if (entity === InventoryAccessGrant)
-        return { existsBy: async () => false };
+        return { existsBy: () => Promise.resolve(false) };
       throw new Error('Unexpected repository');
     };
     const db = {
       getRepository,
       manager: { getRepository },
-      transaction: async (_isolation: string, callback: any) => {
-        if (fail) throw new Error('database unavailable');
-        return pg.transaction(async (tx) =>
-          callback({
-            query: async (q: string, args: any[]) =>
-              (await tx.query(q, args)).rows,
-          }),
+      transaction: (
+        _isolation: string,
+        callback: (
+          manager: Pick<import('typeorm').EntityManager, 'query'>,
+        ) => Promise<unknown>,
+      ) => {
+        if (fail) return Promise.reject(new Error('database unavailable'));
+        return Promise.resolve(
+          pg.transaction((tx) =>
+            Promise.resolve(
+              callback({
+                query: async (q: string, args: unknown[]) =>
+                  (await tx.query(q, args)).rows,
+              } as Pick<import('typeorm').EntityManager, 'query'>),
+            ),
+          ),
         );
       },
     };
     const service = new DashboardService(
-      {} as any,
+      {} as unknown as Repository<
+        import('../hospital/entities/hospital.entity').Hospital
+      >,
       { manager: db } as unknown as Repository<Inventory>,
-      {} as any,
-      {} as any,
+      {} as unknown as Repository<
+        import('../scan_log/entities/scan_log.entity').ScanLog
+      >,
+      {} as unknown as Repository<
+        import('../transfer_requests/entities/transfer_request.entity').TransferRequest
+      >,
     );
     // Minimal mapped schemas let the real near-expiry TypeORM query run in PostgreSQL.
     const mapped = new DataSource({
@@ -143,7 +172,9 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
         }),
       ],
     });
-    await (mapped as any).buildMetadatas();
+    await (
+      mapped as unknown as { buildMetadatas(): Promise<void> }
+    ).buildMetadatas();
     const runner = {
       query: async (q: string, args: any[], structured = false) => {
         if (fail) throw new Error('database unavailable');
@@ -159,10 +190,14 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
           mapped
             .createQueryBuilder('WatchInventory', alias, runner)
             .callListeners(false),
-      } as any,
-      {} as any,
-      {} as any,
-      {} as any,
+      } as unknown as Repository<Inventory>,
+      {} as unknown as Repository<
+        import('../hospital/entities/hospital.entity').Hospital
+      >,
+      {} as unknown as Repository<
+        import('../medicine/entities/medicine.entity').Medicine
+      >,
+      {} as unknown as StockAccessService,
     );
     const module = await Test.createTestingModule({
       imports: [JwtModule.register({ secret: 'dashboard-test-secret' })],
@@ -183,6 +218,8 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
     app.useLogger(false);
     await app.init();
     jwt = module.get(JwtService);
+
+    return Promise.resolve();
   });
   afterAll(async () => {
     await app?.close();
@@ -226,7 +263,7 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
     }
   });
   const get = (path: string, n = 10) =>
-    request(app.getHttpServer())
+    request(app.getHttpServer() as import('node:http').Server)
       .get('/api/dashboard/' + path)
       .set(
         'Authorization',
@@ -234,14 +271,14 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
           jwt.sign({ id: id(n), role: 'SUPERADMIN', facilityId: id(2) }),
       );
   const near = (n = 10) =>
-    request(app.getHttpServer())
+    request(app.getHttpServer() as import('node:http').Server)
       .get('/api/inventory/near-expiry?limit=7')
       .set('Authorization', 'Bearer ' + jwt.sign({ id: id(n) }));
   it('routes near-expiry correctly and refreshes only eligible authorized stock', async () => {
     const response = await near();
     expect(response.status).toBe(200);
-    expect(response.body.data.items).toHaveLength(1);
-    expect(response.body.data.items[0]).toMatchObject({
+    expect(jsonAt(response.body, 'data', 'items')).toHaveLength(1);
+    expect(jsonAt(response.body, 'data', 'items', 0)).toMatchObject({
       facilityId: id(1),
       qty: 10,
       unit: 'vial',
@@ -250,14 +287,14 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
     await sql(
       "INSERT INTO role_permissions VALUES (2,'inventory.read') ON CONFLICT DO NOTHING",
     );
-    expect((await near(11)).body.data.items).toHaveLength(2);
+    expect(jsonAt((await near(11)).body, 'data', 'items')).toHaveLength(2);
     await sql('UPDATE inventory SET quantity=12 WHERE id=$1', [id(31)]);
-    expect((await near()).body.data.items[0].qty).toBe(12);
+    expect(jsonAt((await near()).body, 'data', 'items', 0, 'qty')).toBe(12);
     await sql("UPDATE inventory SET status='DISPOSED' WHERE id=$1", [id(31)]);
-    expect((await near()).body.data.items).toEqual([]);
+    expect(jsonAt((await near()).body, 'data', 'items')).toEqual([]);
     await sql("UPDATE inventory SET status='AVAILABLE' WHERE id=$1", [id(31)]);
     await sql('UPDATE medicines SET deleted_at=now() WHERE id=$1', [id(21)]);
-    expect((await near()).body.data.items).toEqual([]);
+    expect(jsonAt((await near()).body, 'data', 'items')).toEqual([]);
   });
   it('isolates simultaneously signed-in facility/admin sessions and ignores supplied scope', async () => {
     const [facility, admin, superadmin] = await Promise.all([
@@ -267,7 +304,7 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
     ]);
     expect(facility.status).toBe(200);
     expect(facility.headers['cache-control']).toContain('no-store');
-    expect(facility.body.data).toMatchObject({
+    expect(jsonAt(facility.body, 'data')).toMatchObject({
       nodes: 1,
       activeUsers: 1,
       totalInventoryItems: 1,
@@ -275,25 +312,26 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
       scope: { type: 'facility', facilityId: id(1) },
       gs1AuthenticatedVials: 0,
     });
-    expect(admin.body.data).toMatchObject({
+    expect(jsonAt(admin.body, 'data')).toMatchObject({
       nodes: 2,
       activeUsers: 2,
       totalInventoryItems: 2,
       totalVials: 30,
       scope: { type: 'network' },
     });
-    expect(superadmin.body.data.totalVials).toBe(30);
+    expect(jsonAt(superadmin.body, 'data', 'totalVials')).toBe(30);
     const charts = await get('charts');
-    expect(charts.body.data.therapeuticStock).toEqual([
+    expect(jsonAt(charts.body, 'data', 'therapeuticStock')).toEqual([
       { drug: 'Drug 1', qty: 10, unit: 'vial' },
     ]);
-    expect(charts.body.data.asOf).toBeTruthy();
-    expect((await get('summary')).body.data.totalVials).toBe(10);
+    expect(jsonAt(charts.body, 'data', 'asOf')).toBeTruthy();
+    expect(jsonAt((await get('summary')).body, 'data', 'totalVials')).toBe(10);
   });
   it('denies missing grants, revoked verification, inactive memberships and network grants/MFA', async () => {
     for (const path of ['summary', 'charts'])
       expect((await get(path, 13)).status).toBe(403);
     const actor = actors.get(id(10));
+    if (!actor?.hospital) throw new Error('Expected facility actor fixture');
     actor.verification_status = 'PENDING';
     expect((await get('summary')).status).toBe(403);
     actor.verification_status = 'VERIFIED';
@@ -303,6 +341,7 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
     actor.active = false;
     expect((await get('summary')).status).toBe(401);
     const admin = actors.get(id(11));
+    if (!admin) throw new Error('Expected admin fixture');
     admin.role.id = 4;
     expect((await get('summary', 11)).status).toBe(403);
     admin.role.id = 2;
@@ -316,20 +355,30 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
     }
   });
   it('refreshes stock after intake, edits, qualifying scans, disposal and deletion without mixing units', async () => {
-    const baseline = (await get('charts')).body.data;
+    const baseline = jsonAt((await get('charts')).body, 'data');
     await sql(
       "INSERT INTO inventory VALUES ($1,$2,$3,10,'box','BOX',CURRENT_DATE+30,'AVAILABLE',CURRENT_TIMESTAMP)",
       [id(40), id(1), id(21)],
     );
-    let summary = (await get('summary')).body.data;
+    let summary = jsonAt((await get('summary')).body, 'data');
     expect(summary).toMatchObject({
       totalVials: 10,
       quantitiesByUnit: { vial: 10, box: 10 },
       gs1AuthenticatedVials: 0,
     });
-    expect((await get('charts')).body.data.therapeuticStock).toHaveLength(2);
+    expect(
+      jsonAt((await get('charts')).body, 'data', 'therapeuticStock'),
+    ).toHaveLength(2);
     await sql('UPDATE inventory SET quantity=15 WHERE id=$1', [id(31)]);
-    expect((await get('charts')).body.data.inventoryOverTime[0].vials).toBe(15);
+    expect(
+      jsonAt(
+        (await get('charts')).body,
+        'data',
+        'inventoryOverTime',
+        0,
+        'vials',
+      ),
+    ).toBe(15);
     await sql(
       "INSERT INTO scan_logs VALUES ($1,'CLEAN',$2,'NEW','gtin-1','LOT','SERIAL',CURRENT_DATE+30)",
       [id(31), id(50)],
@@ -338,54 +387,70 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
       "INSERT INTO scan_logs VALUES ($1,'FLAGGED',$2,'NEW','gtin-1','LOT','SERIAL',CURRENT_DATE+30)",
       [id(31), id(51)],
     );
-    expect((await get('summary')).body.data.gs1AuthenticatedVials).toBe(1);
+    expect(
+      jsonAt((await get('summary')).body, 'data', 'gs1AuthenticatedVials'),
+    ).toBe(1);
     await sql("UPDATE inventory SET status='DISPOSED' WHERE id=$1", [id(40)]);
-    expect((await get('summary')).body.data.quantitiesByUnit).toEqual({
+    expect(
+      jsonAt((await get('summary')).body, 'data', 'quantitiesByUnit'),
+    ).toEqual({
       vial: 15,
     });
     await sql('UPDATE medicines SET deleted_at=now() WHERE id=$1', [id(21)]);
-    summary = (await get('summary')).body.data;
-    expect(summary.totalVials).toBe(0);
-    expect(summary.gs1AuthenticatedVials).toBe(0);
-    const empty = (await get('charts')).body.data;
+    summary = jsonAt((await get('summary')).body, 'data');
+    expect(jsonAt(summary, 'totalVials')).toBe(0);
+    expect(jsonAt(summary, 'gs1AuthenticatedVials')).toBe(0);
+    const empty = jsonAt((await get('charts')).body, 'data');
     for (const key of [
       'inventoryOverTime',
       'drugSplit',
       'therapeuticStock',
       'redistributionEfficiency',
     ])
-      expect(empty[key]).toEqual([]);
-    expect((await get('summary', 11)).body.data.totalVials).toBe(20);
-    expect(baseline.inventoryOverTime[0].vials).toBe(10);
+      expect(jsonAt(empty, key)).toEqual([]);
+    expect(jsonAt((await get('summary', 11)).body, 'data', 'totalVials')).toBe(
+      20,
+    );
+    expect(jsonAt(baseline, 'inventoryOverTime', 0, 'vials')).toBe(10);
   });
   it('derives risk from stock, completed redistribution from delivery, and integrity from monitored units/events', async () => {
     await sql('UPDATE inventory SET quantity=0 WHERE id=$1', [id(31)]);
-    expect((await get('summary')).body.data.stockOutRiskPct).toBe(100);
+    expect(jsonAt((await get('summary')).body, 'data', 'stockOutRiskPct')).toBe(
+      100,
+    );
     await sql(
       "INSERT INTO transfer_requests(id,from_hospital,to_hospital,status,quantity,created_at,approved_at) VALUES ($1,$2,$3,'APPROVED',3,now(),now())",
       [id(60), id(1), id(2)],
     );
-    expect((await get('charts')).body.data.redistributionEfficiency).toEqual(
-      [],
-    );
+    expect(
+      jsonAt((await get('charts')).body, 'data', 'redistributionEfficiency'),
+    ).toEqual([]);
     await sql("UPDATE transfer_requests SET status='DELIVERED'");
     expect(
-      (await get('charts')).body.data.redistributionEfficiency,
+      jsonAt((await get('charts')).body, 'data', 'redistributionEfficiency'),
     ).toHaveLength(1);
     await sql(
       "INSERT INTO storage_units VALUES ($1,$2,now(),300,'ONLINE',2,8)",
       [id(70), id(1)],
     );
-    expect((await get('summary')).body.data.chainIntegrityPct).toBeNull();
+    expect(
+      jsonAt((await get('summary')).body, 'data', 'chainIntegrityPct'),
+    ).toBeNull();
     await sql(
       'INSERT INTO temperature_logs(unit_id,temperature,recorded_at) VALUES ($1,4,now())',
       [id(70)],
     );
-    expect((await get('summary')).body.data.chainIntegrityPct).toBe(100);
+    expect(
+      jsonAt((await get('summary')).body, 'data', 'chainIntegrityPct'),
+    ).toBe(100);
     await sql("INSERT INTO cold_chain_events VALUES ($1,'OPEN')", [id(70)]);
-    expect((await get('summary')).body.data.chainIntegrityPct).toBe(0);
+    expect(
+      jsonAt((await get('summary')).body, 'data', 'chainIntegrityPct'),
+    ).toBe(0);
     await sql("UPDATE cold_chain_events SET state='RESOLVED'");
-    expect((await get('summary')).body.data.chainIntegrityPct).toBe(100);
+    expect(
+      jsonAt((await get('summary')).body, 'data', 'chainIntegrityPct'),
+    ).toBe(100);
   });
   it('returns a server error when aggregate sources are unavailable', async () => {
     fail = true;
@@ -398,7 +463,7 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
       id(1),
       id(202),
     ]);
-    const network = (await get('summary', 11)).body.data;
+    const network = jsonAt((await get('summary', 11)).body, 'data');
     expect(network).toMatchObject({
       activeUsers: 2,
       totalInventoryItems: 2,
@@ -408,18 +473,24 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
     await sql('UPDATE inventory SET quantity=999 WHERE hospital_id=$1', [
       id(1),
     ]);
-    expect((await get('summary', 11)).body.data.totalInventoryItems).toBe(2);
+    expect(
+      jsonAt((await get('summary', 11)).body, 'data', 'totalInventoryItems'),
+    ).toBe(2);
     await sql('UPDATE medicines SET deleted_at=now() WHERE id=$1', [id(21)]);
-    expect((await get('summary', 11)).body.data.totalInventoryItems).toBe(1);
+    expect(
+      jsonAt((await get('summary', 11)).body, 'data', 'totalInventoryItems'),
+    ).toBe(1);
     await sql('UPDATE users SET active=false WHERE hospital_id=$1', [id(1)]);
-    expect((await get('summary')).body.data.activeUsers).toBe(0);
+    expect(jsonAt((await get('summary')).body, 'data', 'activeUsers')).toBe(0);
     await sql('UPDATE inventory SET status=NULL WHERE hospital_id=$1', [id(2)]);
-    expect((await get('summary', 11)).body.data.nearExpiry).toBeNull();
+    expect(
+      jsonAt((await get('summary', 11)).body, 'data', 'nearExpiry'),
+    ).toBeNull();
   });
   it('keeps missing percentages unavailable and preserves recorded zeros without a fabricated region', async () => {
     await sql('DELETE FROM inventory WHERE hospital_id=$1', [id(1)]);
     const response = await get('summary');
-    expect(response.body.data).toMatchObject({
+    expect(jsonAt(response.body, 'data')).toMatchObject({
       network: { region: null },
       totalVials: 0,
       totalInventoryItems: 0,
@@ -430,14 +501,14 @@ describe('dashboard HTTP authorization and persisted PostgreSQL aggregates', () 
   });
   it('does not turn a missing recorded stock quantity into an aggregate zero', async () => {
     await sql('UPDATE inventory SET quantity=NULL WHERE id=$1', [id(31)]);
-    expect((await get('summary')).body.data).toMatchObject({
+    expect(jsonAt((await get('summary')).body, 'data')).toMatchObject({
       totalVials: null,
       gs1AuthenticatedVials: null,
       stockOutRiskPct: null,
       quantitiesByUnit: { vial: null },
     });
     await sql('UPDATE inventory SET quantity=0 WHERE id=$1', [id(31)]);
-    expect((await get('summary')).body.data).toMatchObject({
+    expect(jsonAt((await get('summary')).body, 'data')).toMatchObject({
       totalVials: 0,
       gs1AuthenticatedVials: 0,
       stockOutRiskPct: 100,

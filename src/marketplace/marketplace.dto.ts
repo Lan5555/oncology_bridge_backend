@@ -55,6 +55,8 @@ export class ListingQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 12;
 }
 export class CheckoutDto {
+  @IsOptional() @IsIn(['PAYSTACK', 'FLUTTERWAVE']) paymentProvider?:
+    'PAYSTACK' | 'FLUTTERWAVE';
   @IsUUID() listingId!: string;
   @IsInt() @Min(1) @Max(999999999) quantity!: number;
   @IsOptional() @IsUUID() prescriptionId?: string;

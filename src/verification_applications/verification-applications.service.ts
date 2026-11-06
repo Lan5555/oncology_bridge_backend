@@ -19,6 +19,34 @@ import { ResponseHelper } from '../helpers/response-helper';
 import { FacilityMembershipRequest } from '../hospital/entities/facility-membership-request.entity';
 import { RegistryMetadataService } from '../registry_metadata/registry-metadata.service';
 
+interface ApplicationListRow {
+  app_id: string;
+  app_status: string;
+  app_registry: string | null;
+  app_result: string;
+  app_license: string;
+  app_submitted: Date;
+  app_reviewed: Date | null;
+  app_reason: string | null;
+  app_reviewer_id: string | null;
+  app_last_checked: Date | null;
+  user_id: string | null;
+  first_name: string;
+  last_name: string;
+  email: string;
+  email_hash: string;
+  account_type: string | null;
+  user_verification: string;
+  user_active: boolean;
+  facility_id: string | null;
+  facility_name: string;
+  facility_type: string;
+  hospital_code: string;
+  facility_status: FacilityStatus;
+  city: string;
+  state: string;
+}
+
 @Injectable()
 export class VerificationApplicationsService {
   private readonly rechecks = new Map<string, number[]>();
@@ -102,11 +130,11 @@ export class VerificationApplicationsService {
       );
     }
     const [items, total] = await Promise.all([
-      qb.getRawMany(),
+      qb.getRawMany<ApplicationListRow>(),
       countQuery.getCount(),
     ]);
     const registryNames = await this.registryMetadata.names();
-    const applications = items.map((r: Record<string, any>) => ({
+    const applications = items.map((r) => ({
       id: r.app_id,
       status: r.app_status,
       registry: r.app_registry,
@@ -269,7 +297,7 @@ export class VerificationApplicationsService {
         user.active ||
         !['PENDING', 'MANUAL_REVIEW'].includes(user.verification_status) ||
         (membership
-          ? facility.status !== 'ACTIVE'
+          ? facility.status !== FacilityStatus.ACTIVE
           : !['PENDING', 'ACTIVE'].includes(facility.status))
       )
         throw new ConflictException(
@@ -283,11 +311,13 @@ export class VerificationApplicationsService {
       user.verification_status = decision;
       if (!membership && !existingFacility)
         facility.status =
-          decision === 'VERIFIED' ? ('ACTIVE' as any) : ('REJECTED' as any);
+          decision === 'VERIFIED'
+            ? FacilityStatus.ACTIVE
+            : FacilityStatus.REJECTED;
       user.active =
         decision === 'VERIFIED' &&
         (!membership || membership.status === 'APPROVED') &&
-        facility.status === 'ACTIVE';
+        facility.status === FacilityStatus.ACTIVE;
       await rows.save(row);
       await users.save(user);
       const audit = manager.getRepository(AuditLog);

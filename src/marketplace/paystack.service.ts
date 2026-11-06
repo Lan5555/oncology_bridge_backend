@@ -1,3 +1,4 @@
+import { paymentCallback } from './payment-callback';
 import {
   BadGatewayException,
   Injectable,
@@ -23,29 +24,9 @@ export class PaystackService {
     return key;
   }
   callback(reference: string) {
-    const raw = this.config.get<string>('FRONTEND_ORIGIN');
-    const allowed = (this.config.get<string>('CORS_ORIGIN') ?? '')
-      .split(',')
-      .map((x) => x.trim());
-    try {
-      const url = new URL(raw ?? '');
-      if (
-        url.protocol !== 'https:' ||
-        url.username ||
-        url.password ||
-        url.pathname !== '/' ||
-        url.search ||
-        url.hash ||
-        !allowed.includes(url.origin)
-      )
-        throw new Error();
-      return `${url.origin}/pay/${encodeURIComponent(reference)}`;
-    } catch {
-      throw new ServiceUnavailableException(
-        'An HTTPS FRONTEND_ORIGIN included in CORS_ORIGIN is required.',
-      );
-    }
+    return paymentCallback(this.config, reference);
   }
+
   assertConfigured() {
     this.secret();
     this.callback('configuration-check');

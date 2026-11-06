@@ -1,8 +1,10 @@
+import { matchers } from '../../test/matchers';
+import { jsonAt } from '../../test/json-response';
 import { PGlite } from '@electric-sql/pglite';
 import { Test } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { JwtModule, JwtService } from '@nestjs/jwt';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import request from 'supertest';
 import { RoleController } from './role.controller';
 import { RoleService } from './role.service';
@@ -27,11 +29,11 @@ describe('assignable marketplace permission API', () => {
     await pg.exec(
       `CREATE TABLE roles(id int PRIMARY KEY,name text); INSERT INTO roles VALUES (2,'PHARMACY_STORE'); CREATE TABLE role_permissions(role_id int,permission text); CREATE TABLE audit_logs(action text);`,
     );
-    const makeManager = (tx: any): any => ({
-      getRepository: (entity: any): any => {
+    const makeManager = (tx: Pick<PGlite, 'query'>) => ({
+      getRepository: (entity: unknown) => {
         if (entity === RolePermission)
           return {
-            findBy: async ({ role_id }: any) =>
+            findBy: async ({ role_id }: { role_id: number }) =>
               role_id === 1
                 ? adminGrants.map((permission) => ({ permission }))
                 : (
@@ -40,12 +42,12 @@ describe('assignable marketplace permission API', () => {
                       [role_id],
                     )
                   ).rows,
-            delete: async ({ role_id }: any) =>
+            delete: ({ role_id }: { role_id: number }) =>
               tx.query('DELETE FROM role_permissions WHERE role_id=$1', [
                 role_id,
               ]),
-            create: (row: any) => row,
-            save: async (rows: any[]) => {
+            create: (row: RolePermission) => row,
+            save: async (rows: RolePermission[]) => {
               for (const row of rows)
                 await tx.query('INSERT INTO role_permissions VALUES ($1,$2)', [
                   row.role_id,
@@ -55,32 +57,33 @@ describe('assignable marketplace permission API', () => {
           };
         if (entity === User)
           return {
-            findOne: async () => ({
-              id: 'admin',
-              active: true,
-              role: { id: 1, name: networkRole },
-            }),
+            findOne: () =>
+              Promise.resolve({
+                id: 'admin',
+                active: true,
+                role: { id: 1, name: networkRole },
+              }),
           };
         if (entity === AuditLog)
           return {
-            save: async (row: any) =>
+            save: (row: Pick<AuditLog, 'action'>) =>
               tx.query('INSERT INTO audit_logs VALUES ($1)', [row.action]),
           };
         throw new Error('Unexpected entity');
       },
     });
-    const db: any = {
-      getRepository: (entity: any) => makeManager(pg).getRepository(entity),
-      transaction: async (cb: any) =>
-        pg.transaction((tx) => cb(makeManager(tx))),
-    };
+    const db = {
+      getRepository: (entity: unknown) => makeManager(pg).getRepository(entity),
+      transaction: (cb: (manager: EntityManager) => Promise<unknown>) =>
+        pg.transaction((tx) => cb(makeManager(tx) as unknown as EntityManager)),
+    } as unknown as DataSource;
     service = new RoleService(
       {
-        findOneBy: async ({ id }: any) =>
+        findOneBy: async ({ id }: { id: number }) =>
           (await pg.query('SELECT * FROM roles WHERE id=$1', [id])).rows[0],
       } as Repository<Role>,
       db.getRepository(RolePermission),
-      db as DataSource,
+      db,
     );
     const module = await Test.createTestingModule({
       imports: [JwtModule.register({ secret: 'permission-test' })],
@@ -104,6 +107,8 @@ describe('assignable marketplace permission API', () => {
     app.useGlobalFilters(new NetResponseFilter());
     await app.init();
     token = module.get(JwtService).sign({ id: 'admin' });
+
+    return Promise.resolve();
   });
   beforeEach(async () => {
     adminGrants = ['admin.access', 'role.manage'];
@@ -115,40 +120,46 @@ describe('assignable marketplace permission API', () => {
     await pg?.close();
   });
   const get = (path = '/api/roles/2/permissions') =>
-    request(app.getHttpServer())
+    request(app.getHttpServer() as import('node:http').Server)
       .get(path)
       .set('Authorization', 'Bearer ' + token);
   const put = (permissions: string[], path = '/api/roles/2/permissions') =>
-    request(app.getHttpServer())
+    request(app.getHttpServer() as import('node:http').Server)
       .put(path)
       .set('Authorization', 'Bearer ' + token)
       .send({ permissions });
   it('exposes the exact key alongside assigned permissions, permits grant/revoke, and persists after reload', async () => {
     const initial = await get().expect(200);
-    expect(initial.body.data.permissions).toEqual([]);
-    expect(initial.body.data.availablePermissions).toEqual(
-      expect.arrayContaining([
+    expect(jsonAt(initial.body, 'data', 'permissions')).toEqual([]);
+    expect(jsonAt(initial.body, 'data', 'availablePermissions')).toEqual(
+      matchers.arrayContaining([
         'marketplace.list',
         'inventory.manage',
         'role.manage',
       ]),
     );
     await put(['marketplace.list']).expect(200);
-    expect((await get().expect(200)).body.data.permissions).toEqual([
-      'marketplace.list',
-    ]);
+    expect(
+      jsonAt((await get().expect(200)).body, 'data', 'permissions'),
+    ).toEqual(['marketplace.list']);
     expect((await pg.query('SELECT * FROM role_permissions')).rows).toEqual([
       { role_id: 2, permission: 'marketplace.list' },
     ]);
     await put([]).expect(200);
-    expect((await get().expect(200)).body.data.permissions).toEqual([]);
+    expect(
+      jsonAt((await get().expect(200)).body, 'data', 'permissions'),
+    ).toEqual([]);
     expect((await pg.query('SELECT * FROM audit_logs')).rows).toHaveLength(2);
   });
   it('supports legacy role.update and the role route alias', async () => {
     adminGrants = ['admin.access', 'role.read', 'role.update'];
     await put(['marketplace.list'], '/role/2/permissions').expect(200);
     expect(
-      (await get('/role/2/permissions').expect(200)).body.data.permissions,
+      jsonAt(
+        (await get('/role/2/permissions').expect(200)).body,
+        'data',
+        'permissions',
+      ),
     ).toEqual(['marketplace.list']);
   });
   it('requires network administration and role permission management', async () => {
@@ -205,11 +216,11 @@ describe('assignable marketplace permission API', () => {
         }
         // Authorized reads remain available even when writes are protected.
         const result = await get(path).expect(200);
-        expect(result.body.data.permissions).toEqual([
+        expect(jsonAt(result.body, 'data', 'permissions')).toEqual([
           'admin.access',
           'role.manage',
         ]);
-        expect(result.body.data.availablePermissions).toContain(
+        expect(jsonAt(result.body, 'data', 'availablePermissions')).toContain(
           'marketplace.list',
         );
       }
@@ -221,9 +232,9 @@ describe('assignable marketplace permission API', () => {
     await put([], '/api/roles/4/permissions').expect(403);
     await expectProtectedUnchanged();
     await put(['medicine.read']).expect(200);
-    expect((await get().expect(200)).body.data.permissions).toEqual([
-      'medicine.read',
-    ]);
+    expect(
+      jsonAt((await get().expect(200)).body, 'data', 'permissions'),
+    ).toEqual(['medicine.read']);
     await pg.query("UPDATE roles SET name='PHARMACY_STORE' WHERE id=2");
   });
   it.each(['/api/roles/4', '/role/4'])(
@@ -232,12 +243,16 @@ describe('assignable marketplace permission API', () => {
       adminGrants.push('role.update');
       await seedProtected();
       for (const permissions of [[], ['medicine.read'], null]) {
-        const result = await request(app.getHttpServer())
+        const result = await request(
+          app.getHttpServer() as import('node:http').Server,
+        )
           .patch(path)
           .set('Authorization', 'Bearer ' + token)
           .send({ name: 'Attempted rename', permissions })
           .expect(403);
-        expect(result.body.message).toContain('permissions are protected');
+        expect(jsonAt(result.body, 'message')).toContain(
+          'permissions are protected',
+        );
       }
       expect(
         (await pg.query('SELECT name FROM roles WHERE id=4')).rows,

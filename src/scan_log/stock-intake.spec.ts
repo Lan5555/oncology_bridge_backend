@@ -1,3 +1,4 @@
+import { matchers } from '../../test/matchers';
 import { ForbiddenException } from '@nestjs/common';
 import { Repository } from 'typeorm';
 import { ScanLogService } from './scan_log.service';
@@ -16,23 +17,36 @@ describe('GS1 stock intake authorization', () => {
       const facilityId = '00000000-0000-4000-8000-000000000001';
       const scans = {
         findOne: jest.fn().mockResolvedValue(null),
-        create: jest.fn((row) => row),
-        save: jest.fn(async (row) => ({ ...row, id: 'scan' })),
+        create: jest.fn((row: unknown) => row),
+        save: jest.fn((row: ScanLog) =>
+          Promise.resolve({ ...row, id: 'scan' }),
+        ),
       };
       const inventory = {
         findOne: jest.fn().mockResolvedValue(null),
-        create: jest.fn((row) => row),
-        save: jest.fn(async (row) => ({ ...row, id: 'inventory' })),
+        create: jest.fn((row: unknown) => row),
+        save: jest.fn((row: Inventory) =>
+          Promise.resolve({ ...row, id: 'inventory' }),
+        ),
         increment: jest.fn(),
       };
       const service = new ScanLogService(
-        scans as any,
-        inventory as any,
-        { findOneBy: async () => ({ id: 'medicine' }) } as any,
-        { findOneBy: async () => ({ id: facilityId }) } as any,
-        {} as any,
-        { create: (row) => row, save: jest.fn() } as any,
-        { assertManage: async () => ({ id: 'user' }) } as any,
+        scans as unknown as Repository<ScanLog>,
+        inventory as unknown as Repository<Inventory>,
+        {
+          findOneBy: () => Promise.resolve({ id: 'medicine' }),
+        } as unknown as Repository<Medicine>,
+        {
+          findOneBy: () => Promise.resolve({ id: facilityId }),
+        } as unknown as Repository<Hospital>,
+        {} as unknown as Repository<User>,
+        {
+          create: (row: unknown) => row,
+          save: jest.fn(),
+        } as unknown as Repository<AuditLog>,
+        {
+          assertManage: () => Promise.resolve({ id: 'user' }),
+        } as unknown as StockAccessService,
       );
       await service.create(
         {
@@ -49,22 +63,27 @@ describe('GS1 stock intake authorization', () => {
         { id: 'user' },
       );
       expect(inventory.create).toHaveBeenCalledWith(
-        expect.objectContaining({ selling_unit: unit ?? null }),
+        matchers.objectContaining({ selling_unit: unit ?? null }),
       );
-      const selected = inventory.findOne.mock.calls[0][0].where;
+      const [options] = inventory.findOne.mock.calls[0] as [
+        { where: Record<string, unknown> },
+      ];
+      const selected = options.where;
       expect(selected.selling_unit).toEqual(
-        unit ?? expect.objectContaining({ _type: 'isNull' }),
+        unit ?? matchers.objectContaining({ _type: 'isNull' }),
       );
       expect(selected.expiry_date).toEqual(
         new Date('2027-12-31T00:00:00.000Z'),
       );
       expect(selected.status).toEqual(
-        expect.objectContaining({
+        matchers.objectContaining({
           _type: 'in',
           _value: ['AVAILABLE', 'NEAR_EXPIRY'],
         }),
       );
       expect(inventory.increment).not.toHaveBeenCalled();
+
+      return Promise.resolve();
     },
   );
   it('checks stock permission before decode and before creating or replaying scan records', async () => {

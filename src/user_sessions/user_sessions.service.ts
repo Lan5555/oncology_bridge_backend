@@ -50,6 +50,7 @@ export class UserSessionsService {
     return ResponseHelper.Success('Session retrieved', this.safe(row));
   }
   async update(id: string, _dto: UpdateUserSessionDto) {
+    void _dto;
     const row = await this.sessions.findOne({
       where: { id },
       relations: { user: true },

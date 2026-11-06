@@ -1,3 +1,5 @@
+import { matchers } from '../../test/matchers';
+import { jsonAt } from '../../test/json-response';
 import { transactionQueryBuilder } from '../../test/typeorm-query-builder';
 import { Test } from '@nestjs/testing';
 import { ValidationPipe } from '@nestjs/common';
@@ -11,7 +13,7 @@ import { NetResponseFilter } from '../helpers/net-response.filter';
 import { PGlite } from '@electric-sql/pglite';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, Repository, EntityManager } from 'typeorm';
 import { InventoryService } from './inventory.service';
 import { Inventory } from './entities/inventory.entity';
 import { Medicine } from '../medicine/entities/medicine.entity';
@@ -28,6 +30,20 @@ import { OperationalReadsService } from '../operations/operational-reads.service
 jest.setTimeout(60000);
 const id = (n: number) =>
   '00000000-0000-4000-8000-' + String(n).padStart(12, '0');
+
+interface MedicineQueryDouble {
+  where(sql: string, params: Record<string, unknown>): MedicineQueryDouble;
+  andWhere(sql: string, params: Record<string, unknown>): MedicineQueryDouble;
+  setLock(): MedicineQueryDouble;
+  getOne(): Promise<unknown>;
+}
+interface InventoryQueryDouble {
+  withDeleted(): InventoryQueryDouble;
+  leftJoinAndSelect(): InventoryQueryDouble;
+  where(sql: string, params: { id: string }): InventoryQueryDouble;
+  setLock(): InventoryQueryDouble;
+  getOne(): Promise<unknown>;
+}
 describe('manual intake with persisted PostgreSQL catalogue links', () => {
   let pg: PGlite, service: InventoryService, reads: OperationalReadsService;
   let permissions: string[], verified: boolean;
@@ -47,8 +63,10 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
     role: { id: 1, name: 'PHARMACIST' },
     hospital: { id: id(1), name: 'Alpha', status: 'ACTIVE' },
   });
-  beforeAll(async () => {
+  beforeAll(() => {
     pg = new PGlite();
+
+    return Promise.resolve();
   });
   afterAll(async () => {
     await pg.close();
@@ -84,29 +102,32 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
           n === 6 ? '2026-01-01' : null,
         ],
       );
-    const makeManager = (tx: any): any => ({
+    const makeManager = (tx: Pick<PGlite, 'query'>) => ({
       createQueryBuilder: () =>
         transactionQueryBuilder(
-          async (sql, parameters) => (await tx.query(sql, parameters)).rows,
+          async (sql, parameters) =>
+            (await tx.query<Record<string, unknown>>(sql, parameters)).rows,
         ),
-      query: async (sql: string, args: any[]) =>
-        (await tx.query(sql, args)).rows,
-      getRepository: (entity: any): any => {
-        if (entity === User) return { findOne: async () => actor() };
+      query: async (sql: string, args: unknown[]) =>
+        (await tx.query<Record<string, unknown>>(sql, args)).rows,
+      getRepository: (entity: unknown) => {
+        if (entity === User) return { findOne: () => Promise.resolve(actor()) };
         if (entity === RolePermission)
           return {
-            findBy: async () =>
-              permissions.map((permission) => ({ permission })),
+            findBy: () =>
+              Promise.resolve(
+                permissions.map((permission) => ({ permission })),
+              ),
           };
         if (entity === VerificationApplication)
-          return { findOne: async () => ({ status: 'VERIFIED' }) };
+          return { findOne: () => Promise.resolve({ status: 'VERIFIED' }) };
         if (entity === InventoryAccessGrant)
-          return { existsBy: async () => false };
+          return { existsBy: () => Promise.resolve(false) };
         if (entity === Hospital)
           return {
             findOne: async () =>
               (
-                await tx.query(
+                await tx.query<Record<string, unknown>>(
                   'SELECT * FROM hospitals WHERE id=$1 FOR UPDATE',
                   [id(1)],
                 )
@@ -116,14 +137,14 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
           return {
             createQueryBuilder: () => {
               const clauses: string[] = [];
-              const params: any = {};
-              const qb: any = {
-                where: (sql: string, p: any) => {
+              const params: Record<string, unknown> = {};
+              const qb: MedicineQueryDouble = {
+                where: (sql: string, p: Record<string, unknown>) => {
                   clauses.push(sql);
                   Object.assign(params, p);
                   return qb;
                 },
-                andWhere: (sql: string, p: any) => {
+                andWhere: (sql: string, p: Record<string, unknown>) => {
                   clauses.push(sql);
                   Object.assign(params, p);
                   return qb;
@@ -131,7 +152,7 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
                 setLock: () => qb,
                 getOne: async () =>
                   (
-                    await tx.query(
+                    await tx.query<Record<string, unknown>>(
                       'SELECT m.* FROM medicines m WHERE ' +
                         clauses
                           .join(' AND ')
@@ -146,27 +167,28 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
           };
         if (entity === AuditLog)
           return {
-            save: async (row: any) =>
+            save: (row: Pick<AuditLog, 'description'>) =>
               tx.query('INSERT INTO audit_logs VALUES ($1)', [row.description]),
           };
         if (entity === Inventory)
           return {
             createQueryBuilder: () => {
               let selected: string;
-              const qb: any = {
+              const qb: InventoryQueryDouble = {
                 withDeleted: () => qb,
                 leftJoinAndSelect: () => qb,
-                where: (_sql: string, params: any) => {
+                where: (_sql: string, params: { id: string }) => {
                   selected = params.id;
                   return qb;
                 },
                 setLock: () => qb,
                 getOne: async () => {
                   const row = (
-                    await tx.query(
-                      'SELECT * FROM inventory WHERE id=$1 FOR UPDATE',
-                      [selected],
-                    )
+                    await tx.query<
+                      Inventory & { hospital_id: string; medicine_id: string }
+                    >('SELECT * FROM inventory WHERE id=$1 FOR UPDATE', [
+                      selected,
+                    ])
                   ).rows[0];
                   return row
                     ? {
@@ -179,20 +201,24 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
               };
               return qb;
             },
-            create: (row: any) => row,
-            exists: async ({ where }: any) =>
+            create: (row: Inventory) => row,
+            exists: async ({
+              where,
+            }: {
+              where: Pick<Inventory, 'hospital' | 'medicine' | 'batch_number'>;
+            }) =>
               (
-                await tx.query(
+                await tx.query<Record<string, unknown>>(
                   'SELECT 1 FROM inventory WHERE hospital_id=$1 AND medicine_id=$2 AND batch_number=$3',
                   [where.hospital.id, where.medicine.id, where.batch_number],
                 )
               ).rows.length > 0,
-            save: async (row: any) =>
+            save: async (row: Inventory) =>
               row.id
                 ? {
                     ...row,
                     ...(
-                      await tx.query(
+                      await tx.query<Record<string, unknown>>(
                         'UPDATE inventory SET selling_unit=$2,quantity=$3 WHERE id=$1 RETURNING *',
                         [row.id, row.selling_unit, row.quantity],
                       )
@@ -201,7 +227,7 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
                 : {
                     ...row,
                     ...(
-                      await tx.query(
+                      await tx.query<Record<string, unknown>>(
                         `INSERT INTO inventory(hospital_id,medicine_id,batch_number,serial_number,expiry_date,quantity,selling_unit,status)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
                         [
@@ -221,21 +247,30 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
         throw new Error('Unexpected entity');
       },
     });
-    const db: any = {
+    const db = {
       manager: makeManager(pg),
-      getRepository: (entity: any) => makeManager(pg).getRepository(entity),
-      transaction: (arg: any, callback?: any) =>
-        pg.transaction((tx) => (callback ?? arg)(makeManager(tx))),
-    };
-    const stock = new StockAccessService(db as DataSource);
+      getRepository: (entity: unknown) => makeManager(pg).getRepository(entity),
+      transaction: (
+        arg: string | ((manager: EntityManager) => Promise<unknown>),
+        callback?: (manager: EntityManager) => Promise<unknown>,
+      ) =>
+        pg.transaction((tx) =>
+          (typeof arg === 'function' ? arg : callback!)(
+            makeManager(tx) as unknown as EntityManager,
+          ),
+        ),
+    } as unknown as DataSource;
+    const stock = new StockAccessService(db);
     stockAccess = stock;
     service = new InventoryService(
-      { manager: db } as Repository<Inventory>,
+      { manager: db } as unknown as Repository<Inventory>,
       {} as Repository<Hospital>,
       {} as Repository<Medicine>,
       stock,
     );
-    reads = new OperationalReadsService(db as DataSource);
+    reads = new OperationalReadsService(db);
+
+    return Promise.resolve();
   });
   it('returns the exact approved storage requirement in creation and refreshed inventory, without defaults', async () => {
     const approved =
@@ -251,9 +286,9 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
       limit: 100,
       withinDays: 60,
     });
-    expect((refreshed.data?.items[0].medicine as any).storage_temperature).toBe(
-      approved,
-    );
+    expect(
+      jsonAt(refreshed.data?.items[0].medicine, 'storage_temperature'),
+    ).toBe(approved);
     const missing = await service.create(
       { ...dto(), medicineId: id(4) },
       id(9),
@@ -279,7 +314,7 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
     });
     expect(refreshed.data?.items).toHaveLength(2);
     expect(refreshed.data?.items[0]).toMatchObject({
-      medicine: { generic_name: 'Same generic', id: expect.any(String) },
+      medicine: { generic_name: 'Same generic', id: matchers.any(String) },
       drug: 'Same generic',
       lot: 'LOT-1',
       qty: 10,
@@ -293,7 +328,7 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
       actorId: id(9),
       facilityId: id(1),
       medicineId: id(3),
-      inventoryId: expect.any(String),
+      inventoryId: matchers.any(String),
       batchNumber: 'LOT-1',
     });
   });
@@ -426,8 +461,10 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
     })
       .overrideGuard(AuthGuard)
       .useValue({
-        canActivate: (context: any) => {
-          context.switchToHttp().getRequest().user = {
+        canActivate: (context: import('@nestjs/common').ExecutionContext) => {
+          context
+            .switchToHttp()
+            .getRequest<{ user: Record<string, unknown> }>().user = {
             id: id(9),
             facilityId: id(1),
           };
@@ -450,37 +487,54 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
     app.useGlobalFilters(new NetResponseFilter());
     await app.init();
     try {
-      const added = await request(app.getHttpServer())
+      const added = await request(
+        app.getHttpServer() as import('node:http').Server,
+      )
         .post('/api/inventory')
         .send(dto())
         .expect(201);
-      expect(added.body.data).toMatchObject({ unit: 'box', quantity: 10 });
-      const refreshed = await request(app.getHttpServer())
+      expect(jsonAt(added.body, 'data')).toMatchObject({
+        unit: 'box',
+        quantity: 10,
+      });
+      const refreshed = await request(
+        app.getHttpServer() as import('node:http').Server,
+      )
         .get('/api/inventory?page=1&limit=100')
         .expect(200);
-      expect(refreshed.body.data.items[0]).toMatchObject({
+      expect(jsonAt(refreshed.body, 'data', 'items', 0)).toMatchObject({
         unit: 'box',
         qty: 10,
         quantity: 10,
       });
-      const invalid = await request(app.getHttpServer())
+      const invalid = await request(
+        app.getHttpServer() as import('node:http').Server,
+      )
         .post('/api/inventory')
         .send({ ...dto(), unit: 'tablet' })
         .expect(400);
       expect(invalid.body).toMatchObject({
         success: false,
-        message: expect.stringContaining('unit'),
+        message: matchers.stringContaining('unit'),
       });
       await pg.query('UPDATE inventory SET selling_unit=NULL WHERE id=$1', [
-        added.body.data.id,
+        jsonAt(added.body, 'data', 'id'),
       ]);
-      await request(app.getHttpServer())
-        .patch('/api/inventory/' + added.body.data.id)
+      await request(app.getHttpServer() as import('node:http').Server)
+        .patch('/api/inventory/' + String(jsonAt(added.body, 'data', 'id')))
         .send({ unit: 'box' })
         .expect(200);
       expect(
-        (await request(app.getHttpServer()).get('/api/inventory').expect(200))
-          .body.data.items[0],
+        jsonAt(
+          (
+            await request(app.getHttpServer() as import('node:http').Server)
+              .get('/api/inventory')
+              .expect(200)
+          ).body,
+          'data',
+          'items',
+          0,
+        ),
       ).toMatchObject({ unit: 'box', quantity: 10 });
     } finally {
       await app.close();
@@ -494,7 +548,10 @@ describe('manual intake with persisted PostgreSQL catalogue links', () => {
       { unit: 'box', sellingUnit: 'vial' },
     ])
       await expect(
-        service.create({ ...dto(), ...change } as any, id(9)),
+        service.create(
+          { ...dto(), ...change } as unknown as ManualInventoryIntakeDto,
+          id(9),
+        ),
       ).rejects.toMatchObject({ status: 400 });
     const legacy = await service.create(
       { ...dto(), unit: undefined, sellingUnit: 'pack' },

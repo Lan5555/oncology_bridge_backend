@@ -252,10 +252,13 @@ export class ScanLogService {
   }
 
   update(_id: string, _dto: UpdateScanLogDto): never {
+    void _id;
+    void _dto;
     throw new ForbiddenException('Scan history cannot be modified.');
   }
 
   remove(_id: string): never {
+    void _id;
     throw new ForbiddenException('Scan history cannot be deleted.');
   }
 
@@ -315,6 +318,8 @@ export class ScanLogService {
         result: scan.result,
         duplicate: scan.result === 'FLAGGED',
         gs1Verified: true,
+        authenticity: 'UNVERIFIED',
+        verificationScope: 'BARCODE_FORMAT_AND_LOCAL_DUPLICATE_CHECK_ONLY',
         clientUuid: scan.client_uuid,
         replay,
       },

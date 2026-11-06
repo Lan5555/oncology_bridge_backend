@@ -1,3 +1,4 @@
+import { matchers } from '../../test/matchers';
 import { PGlite } from '@electric-sql/pglite';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -25,7 +26,7 @@ describe('email migration and transaction boundaries', () => {
       "SELECT tablename AS name FROM pg_tables WHERE schemaname='public'",
     );
     expect(result.rows.map((row) => row.name)).toEqual(
-      expect.arrayContaining(['email_outbox', 'password_resets']),
+      matchers.arrayContaining(['email_outbox', 'password_resets']),
     );
   });
 

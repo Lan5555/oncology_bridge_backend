@@ -9,9 +9,15 @@ import { Hospital } from '../hospital/entities/hospital.entity';
 import { User } from '../users/entities/user.entity';
 import { AuditLog } from '../audit_log/entities/audit_log.entity';
 import { Gs1ImageDecoderService } from './gs1-image-decoder.service';
+import { MedicineVerificationController } from './medicine-verification.controller';
+import { MedicineVerificationService } from './medicine-verification.service';
+import { OpenFdaLabelService } from './openfda-label.service';
+import { ConfigModule } from '@nestjs/config';
+import { NafdacRegistrationService } from './nafdac-registration.service';
 
 @Module({
   imports: [
+    ConfigModule,
     TypeOrmModule.forFeature([
       ScanLog,
       Inventory,
@@ -21,7 +27,13 @@ import { Gs1ImageDecoderService } from './gs1-image-decoder.service';
       AuditLog,
     ]),
   ],
-  controllers: [ScanLogController],
-  providers: [ScanLogService, Gs1ImageDecoderService],
+  controllers: [ScanLogController, MedicineVerificationController],
+  providers: [
+    ScanLogService,
+    Gs1ImageDecoderService,
+    MedicineVerificationService,
+    OpenFdaLabelService,
+    NafdacRegistrationService,
+  ],
 })
 export class ScanLogModule {}

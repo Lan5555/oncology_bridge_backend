@@ -14,7 +14,7 @@ import {
 
 export class OperationalQueryDto {
   @IsOptional()
-  @Transform(({ value }) =>
+  @Transform(({ value }: { value: unknown }) =>
     value === 'true' ? true : value === 'false' ? false : value,
   )
   @IsBoolean()
@@ -22,8 +22,10 @@ export class OperationalQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(1000000) page = 1;
   @IsOptional()
   @Type(() => Number)
-  @Transform(({ value }) =>
-    Number.isInteger(value) && value > 100 ? 100 : value,
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'number' && Number.isInteger(value) && value > 100
+      ? 100
+      : value,
   )
   @IsInt()
   @Min(1)

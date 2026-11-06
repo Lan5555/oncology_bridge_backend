@@ -1,3 +1,4 @@
+import { matchers } from '../../test/matchers';
 import { JwtService } from '@nestjs/jwt';
 import { EntityManager, Repository } from 'typeorm';
 import { AuthService } from './auth.service';
@@ -98,7 +99,7 @@ describe('password recovery', () => {
     expect(s.emails.queuePasswordReset).toHaveBeenCalledWith(
       'user@example.com',
       token,
-      expect.any(Date),
+      matchers.any(Date),
       s.manager,
     );
     expect(JSON.stringify(known)).not.toContain(token);
@@ -132,14 +133,14 @@ describe('password recovery', () => {
     );
     await restarted.resetPassword(token, 'new-password');
     expect(s.users.save).toHaveBeenCalledWith(
-      expect.objectContaining({ password_hash: 'new-hash' }),
+      matchers.objectContaining({ password_hash: 'new-hash' }),
     );
     expect(s.sessions.update).toHaveBeenCalledWith(
       { user: { id: 'user' } },
       { refresh_token: '' },
     );
     expect(s.emails.enqueue).toHaveBeenCalledWith(
-      expect.objectContaining({
+      matchers.objectContaining({
         subject: 'Your OncoSourz password was changed',
       }),
       s.manager,

@@ -1,3 +1,4 @@
+import { FlutterwaveService } from './flutterwave.service';
 import { SELLING_UNITS } from '../inventory/selling-unit';
 import { OrderTrackingService } from '../orders/order-tracking.service';
 import { listingExists } from './listing-exists';
@@ -11,7 +12,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, QueryFailedError } from 'typeorm';
 import { createHash, randomUUID } from 'node:crypto';
 import type {
   ActorRow,
@@ -86,6 +87,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     private readonly encryption: EncryptionService,
     private readonly config: ConfigService,
     private readonly tracking: OrderTrackingService,
+    private readonly flutterwave: FlutterwaveService,
   ) {}
 
   onModuleInit() {
@@ -432,13 +434,22 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         'IDEMPOTENCY_CONFLICT',
         'Provide a UUID Idempotency-Key header.',
       );
-    this.paystack.assertConfigured();
+    const provider = dto.paymentProvider ?? 'PAYSTACK';
+    if (!['PAYSTACK', 'FLUTTERWAVE'].includes(provider))
+      this.fail(
+        422,
+        'INVALID_PAYMENT_PROVIDER',
+        'Select Paystack or Flutterwave.',
+      );
+    this.gateway(provider).assertConfigured();
     const hash = createHash('sha256')
       .update(
         JSON.stringify([
           dto.listingId.toLowerCase(),
           dto.quantity,
           dto.prescriptionId?.toLowerCase() ?? null,
+          // Preserve hashes for existing Paystack orders.
+          ...(provider === 'FLUTTERWAVE' ? [provider] : []),
         ]),
       )
       .digest('hex');
@@ -513,8 +524,8 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       );
       const [created] = await manager.query<OrderRow[]>(
         `INSERT INTO marketplace_orders(id,buyer_id,listing_id,inventory_item_id,facility_id,
-        prescription_id,idempotency_key,payload_hash,quantity,unit_price_kobo,total_kobo,snapshot,invoice_reference,payment_reference,expires_at,buyer_snapshot)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now()+($15 * interval '1 minute'),$16) RETURNING *`,
+        prescription_id,idempotency_key,payload_hash,quantity,unit_price_kobo,total_kobo,snapshot,invoice_reference,payment_reference,expires_at,buyer_snapshot,payment_provider)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now()+($15 * interval '1 minute'),$16,$17) RETURNING *`,
         [
           id,
           actorId,
@@ -535,6 +546,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
             name: [user.first_name, user.last_name].filter(Boolean).join(' '),
             facilityName: user.facility_name ?? null,
           },
+          provider,
         ],
       );
       await this.tracking.event(
@@ -556,6 +568,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
 
   private checkoutResult(order: OrderRow) {
     return {
+      paymentProvider: order.payment_provider,
       authorizationUrl: order.authorization_url,
       reference: order.payment_reference,
       invoiceReference: order.invoice_reference,
@@ -605,15 +618,18 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
             throw new ServiceUnavailableException(
               'The buyer email is unavailable.',
             );
-          const url = await this.paystack.initialize(
+          const url = await this.gateway(order.payment_provider).initialize(
             email,
             Number(order.total_kobo),
             order.payment_reference,
             order.invoice_reference,
           );
+          // A SELECT over the update returns rows; raw UPDATE returns [rows, count] in TypeORM.
           const [saved] = await manager.query<OrderRow[]>(
-            `UPDATE marketplace_orders SET authorization_url=$2,initialization_attempted=true,
-          payment_status='AWAITING_PAYMENT' WHERE id=$1 RETURNING *`,
+            `WITH initialized AS (
+          UPDATE marketplace_orders SET authorization_url=$2,initialization_attempted=true,
+          payment_status='AWAITING_PAYMENT' WHERE id=$1 RETURNING *
+          ) SELECT * FROM initialized`,
             [id, url],
           );
           return saved;
@@ -647,7 +663,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       typeof parsed?.data?.reference === 'string'
     ) {
       const [order] = await this.db.query<OrderRow[]>(
-        'SELECT id FROM marketplace_orders WHERE payment_reference=$1',
+        "SELECT id FROM marketplace_orders WHERE payment_reference=$1 AND payment_provider='PAYSTACK'",
         [parsed.data.reference],
       );
       if (order) await this.reconcile(parsed.data.reference);
@@ -655,8 +671,36 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     return { success: true };
   }
 
+  private gateway(provider: OrderRow['payment_provider']) {
+    return provider === 'FLUTTERWAVE' ? this.flutterwave : this.paystack;
+  }
+  async flutterwaveWebhook(signature: string | undefined, event: unknown) {
+    this.flutterwave.authenticateWebhook(signature);
+    const parsed = event as {
+      event?: unknown;
+      data?: { tx_ref?: unknown };
+    } | null;
+    if (
+      parsed?.event === 'charge.completed' &&
+      typeof parsed.data?.tx_ref === 'string'
+    ) {
+      const [order] = await this.db.query<OrderRow[]>(
+        "SELECT id FROM marketplace_orders WHERE payment_reference=$1 AND payment_provider='FLUTTERWAVE'",
+        [parsed.data.tx_ref],
+      );
+      if (order) await this.reconcile(parsed.data.tx_ref);
+    }
+    return { success: true };
+  }
   async reconcile(reference: string) {
-    const payment = await this.paystack.verify(reference);
+    const [order] = await this.db.query<OrderRow[]>(
+      'SELECT payment_provider FROM marketplace_orders WHERE payment_reference=$1',
+      [reference],
+    );
+    if (!order) return;
+    const payment = await this.gateway(order.payment_provider).verify(
+      reference,
+    );
     return this.applyPayment(reference, payment);
   }
   private async applyPayment(reference: string, payment: VerifiedPayment) {
@@ -834,8 +878,15 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       ],
       paymentMethods: ['Debit card', 'Bank transfer', 'USSD'],
       isDemo: false,
-      paystackUrl:
+      paymentProvider: order.payment_provider,
+      authorizationUrl:
         !expired && order.reservation_state === 'RESERVED'
+          ? order.authorization_url
+          : null,
+      paystackUrl:
+        !expired &&
+        order.reservation_state === 'RESERVED' &&
+        order.payment_provider === 'PAYSTACK'
           ? order.authorization_url
           : null,
       expiresAt: new Date(order.expires_at).toISOString(),
@@ -843,17 +894,47 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private logMaintenanceFailure(step: string, error: unknown) {
+    // Never serialize QueryFailedError: it contains SQL, parameters and driver details.
+    const cause: unknown =
+      error instanceof QueryFailedError ? error.driverError : error;
+    const record =
+      cause && typeof cause === 'object'
+        ? (cause as Record<string, unknown>)
+        : {};
+    const code =
+      typeof record.code === 'string' && /^[A-Z0-9_]{1,64}$/i.test(record.code)
+        ? ` [${record.code}]`
+        : '';
+    const message = (
+      typeof record.message === 'string' ? record.message : 'Unknown error'
+    )
+      .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s]+/gi, '[redacted URL]')
+      .replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]')
+      .replace(
+        /\b(password|secret|token|api[_-]?key)\s*[=:]\s*\S+/gi,
+        '$1=[redacted]',
+      )
+      .replace(/[\r\n\t]/g, ' ')
+      .slice(0, 1000);
+    this.logger.warn(
+      `Marketplace maintenance failed during ${step}${code}: ${message}. It will retry.`,
+    );
+  }
+
   async maintenance() {
     if (this.working) return;
     this.working = true;
+    let step = 'expiring reservations';
     try {
       await this.db.transaction(async (manager) => {
         await this.lock(manager);
-        const expired = await manager.query<
-          { id: string }[]
-        >(`UPDATE marketplace_orders SET reservation_state='RELEASED',payment_status='EXPIRED',
+        // Keep the final command SELECT so TypeORM returns rows rather than [rows, count].
+        const expired = await manager.query<{ id: string }[]>(`WITH expired AS (
+          UPDATE marketplace_orders SET reservation_state='RELEASED',payment_status='EXPIRED',
           order_status='CANCELLED',version=version+1,updated_at=now()
-          WHERE reservation_state='RESERVED' AND expires_at<=now() RETURNING id`);
+          WHERE reservation_state='RESERVED' AND expires_at<=now() RETURNING id
+          ) SELECT id FROM expired`);
         for (const row of expired)
           await this.tracking.event(
             manager,
@@ -864,6 +945,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
           );
       });
       // Also keep verifying released transactions to detect late successful payments.
+      step = 'loading payments for reconciliation';
       const rows = await this.db.query<
         Pick<OrderRow, 'payment_reference'>[]
       >(`SELECT payment_reference FROM marketplace_orders WHERE payment_status NOT IN ('PAID','PAID_REVIEW')
@@ -872,18 +954,19 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       for (const row of rows) {
         try {
           await this.reconcile(row.payment_reference);
-        } catch {
+        } catch (error) {
+          this.logMaintenanceFailure('verifying a payment', error);
+          step = 'saving payment verification retry time';
           await this.db.query(
             'UPDATE marketplace_orders SET last_verified_at=now() WHERE payment_reference=$1',
             [row.payment_reference],
           );
         }
       }
+      step = 'cleaning up pending images';
       await this.images.cleanupPending();
-    } catch {
-      this.logger.warn(
-        'Marketplace maintenance could not complete; it will retry. Check migration and provider configuration.',
-      );
+    } catch (error) {
+      this.logMaintenanceFailure(step, error);
     } finally {
       this.working = false;
     }

@@ -254,29 +254,26 @@ export class AdminIntegrationsService {
   async configuration(key: string, actorId: string, ip: string) {
     const schema = this.schema(key);
     const { values, secrets } = await this.readConfiguration(key);
-    const fields = await Promise.all(
-      schema.fields.map(async (field) => {
-        const secret = field.type === 'secret';
-        const value = secret
-          ? undefined
-          : (values[field.key] ?? this.envValue(field));
-        const configured = secret
-          ? Boolean(
-              secrets[field.key] ||
-              (field.env && process.env[field.env]?.trim()),
-            )
-          : value !== undefined && value !== null && value !== '';
-        return {
-          key: field.key,
-          label: field.label,
-          type: field.type,
-          required: field.required,
-          configured,
-          description: field.description,
-          ...(!secret && configured ? { value } : {}),
-        };
-      }),
-    );
+    const fields = schema.fields.map((field) => {
+      const secret = field.type === 'secret';
+      const value = secret
+        ? undefined
+        : (values[field.key] ?? this.envValue(field));
+      const configured = secret
+        ? Boolean(
+            secrets[field.key] || (field.env && process.env[field.env]?.trim()),
+          )
+        : value !== undefined && value !== null && value !== '';
+      return {
+        key: field.key,
+        label: field.label,
+        type: field.type,
+        required: field.required,
+        configured,
+        description: field.description,
+        ...(!secret && configured ? { value } : {}),
+      };
+    });
     await this.audit(
       actorId,
       ip,

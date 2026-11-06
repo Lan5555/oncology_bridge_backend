@@ -9,6 +9,7 @@ import { DataSource } from 'typeorm';
 import { User } from '../users/entities/user.entity';
 import { RolePermission } from '../role/entities/role-permission.entity';
 import { VerificationApplication } from '../verification_applications/entities/verification-application.entity';
+import { FacilityStatus } from '../hospital/entities/hospital.entity';
 
 type ManagedRequest = {
   user?: { id?: string; mfa?: boolean; amr?: string[]; facilityId?: string };
@@ -65,7 +66,7 @@ export class UserManagementGuard implements CanActivate {
     if (
       roleName !== 'FACILITY_ADMIN' ||
       !actor.hospital ||
-      actor.hospital.status !== 'ACTIVE' ||
+      actor.hospital.status !== FacilityStatus.ACTIVE ||
       actor.hospital.deleted_at ||
       actor.verification_status !== 'VERIFIED' ||
       !assigned.has('facility.users.manage')
@@ -103,7 +104,7 @@ export class FacilityTeamGuard implements CanActivate {
       !actor?.active ||
       actor.role?.name.trim().toUpperCase() !== 'FACILITY_ADMIN' ||
       !actor.hospital ||
-      actor.hospital.status !== 'ACTIVE' ||
+      actor.hospital.status !== FacilityStatus.ACTIVE ||
       actor.hospital.deleted_at ||
       actor.verification_status !== 'VERIFIED'
     )

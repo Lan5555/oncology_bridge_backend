@@ -1,15 +1,17 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { StockAccessService } from '../guards/stock-access.service';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Not, Repository } from 'typeorm';
+import { EntityManager, In, Not, Repository } from 'typeorm';
 import { Inventory } from '../inventory/entities/inventory.entity';
 import { Medicine } from './entities/medicine.entity';
 import { CreateMedicineDto } from './dto/create-medicine.dto';
+import { BulkCreateMedicinesDto } from './dto/bulk-create-medicines.dto';
 import { ResponseHelper } from '../helpers/response-helper';
 import { DataSource } from 'typeorm';
 import { AuditLog } from '../audit_log/entities/audit_log.entity';
@@ -39,6 +41,90 @@ export class MedicineService {
       ),
     );
   }
+  async createBulk(dto: BulkCreateMedicinesDto, actorId: string) {
+    const rows = dto.medicines;
+    const errors: { index: number; field: string; message: string }[] = [];
+    const seen = new Set<string>();
+    rows.forEach((row, index) => {
+      for (const [field, value] of Object.entries(row)) {
+        if (typeof value !== 'string' || !value.trim())
+          errors.push({ index, field, message: `${field} must not be blank` });
+      }
+      if (!validateGtin(row.gtin))
+        errors.push({
+          index,
+          field: 'gtin',
+          message: 'gtin must be a valid GTIN-14 with a correct check digit',
+        });
+      if (seen.has(row.gtin))
+        errors.push({
+          index,
+          field: 'gtin',
+          message: 'Duplicate GTIN in this request',
+        });
+      seen.add(row.gtin);
+    });
+    if (errors.length)
+      throw new BadRequestException({
+        message: 'Bulk medicine validation failed',
+        data: { errors },
+      });
+
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+        const actor = await this.stockAccess.catalogueActor(
+          actorId,
+          'medicine.create',
+          manager,
+        );
+        const medicines = manager.getRepository(Medicine);
+        // Deleted catalogue entries still reserve their unique GTIN.
+        const existing = await medicines.find({
+          select: { gtin: true },
+          where: { gtin: In([...seen]) },
+          withDeleted: true,
+        });
+        if (existing.length) {
+          const conflicts = new Set(existing.map((row) => row.gtin));
+          throw new ConflictException({
+            message:
+              'One or more GTINs already exist; no medicines were created',
+            data: {
+              errors: rows.flatMap((row, index) =>
+                conflicts.has(row.gtin)
+                  ? [{ index, field: 'gtin', message: 'GTIN already exists' }]
+                  : [],
+              ),
+            },
+          });
+        }
+        const created = await medicines.save(
+          rows.map((row) =>
+            medicines.create({
+              ...row,
+              catalog_facility_id: actor.facilityId,
+            }),
+          ),
+        );
+        return ResponseHelper.Success('Medicines created', {
+          count: created.length,
+          medicines: created,
+        });
+      });
+    } catch (error) {
+      // A concurrent insert may win after the preflight duplicate check.
+      const pgError = error as {
+        code?: string;
+        driverError?: { code?: string };
+      };
+      if ((pgError?.driverError?.code ?? pgError?.code) === '23505')
+        throw new ConflictException(
+          'A GTIN was created concurrently; no medicines were created. Refresh the catalogue and retry.',
+        );
+      throw error;
+    }
+  }
+
   async findAll(q?: string) {
     const qb = this.medicines
       .createQueryBuilder('m')
@@ -171,19 +257,19 @@ export class MedicineService {
         .from('inventory', 'batch')
         .where('batch.medicine_id = :medicineId', { medicineId: id })
         .getRawMany<{ id: string; hospital_id: string }>();
-      const listings = await manager.query(
+      const listings = await manager.query<{ id: string }[]>(
         `UPDATE marketplace_listings SET status='SUSPENDED'
         WHERE inventory_item_id IN (SELECT id FROM inventory WHERE medicine_id=$1)
         AND status<>'SUSPENDED' RETURNING id`,
         [id],
       );
-      const reservations = await manager.query(
+      const reservations = await manager.query<{ id: string }[]>(
         `UPDATE marketplace_orders SET reservation_state='RELEASED'
         WHERE inventory_item_id IN (SELECT id FROM inventory WHERE medicine_id=$1)
         AND reservation_state='RESERVED' RETURNING id`,
         [id],
       );
-      const paidOrders = await manager.query(
+      const paidOrders = await manager.query<{ id: string }[]>(
         `UPDATE marketplace_orders SET fulfillment_state='PAYMENT_REVIEW_REQUIRED'
         WHERE inventory_item_id IN (SELECT id FROM inventory WHERE medicine_id=$1)
         AND payment_status IN ('PAID','PAID_REVIEW')

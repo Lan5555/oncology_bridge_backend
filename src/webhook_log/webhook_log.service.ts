@@ -32,9 +32,12 @@ export class WebhookLogService {
     return ResponseHelper.Success('Webhook log retrieved', row);
   }
   update(_id: string, _dto: UpdateWebhookLogDto): never {
+    void _id;
+    void _dto;
     throw new ForbiddenException('Webhook logs are append-only');
   }
   remove(_id: string): never {
+    void _id;
     throw new ForbiddenException('Webhook logs are append-only');
   }
 }

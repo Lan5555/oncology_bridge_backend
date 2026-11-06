@@ -1,4 +1,5 @@
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { matchers } from '../../test/matchers';
+import { DataSource, Repository } from 'typeorm';
 import { ExecutionContext } from '@nestjs/common';
 import { StockAccessService } from './stock-access.service';
 import { InventoryManagementGuard } from './inventory-management.guard';
@@ -44,19 +45,23 @@ describe('explicit facility stock access', () => {
     individual = false;
     applicationStatus = 'VERIFIED';
     usersRepo = {
-      findOne: jest.fn(async (options) =>
-        options.where.id === 'network' ? network : member,
+      findOne: jest.fn((options: { where: { id: string } }) =>
+        Promise.resolve(options.where.id === 'network' ? network : member),
       ),
     };
     grantsRepo = {
-      existsBy: jest.fn(
-        async (query) => individual && query.facility_id === 'facility',
+      existsBy: jest.fn((query: { facility_id: string }) =>
+        Promise.resolve(individual && query.facility_id === 'facility'),
       ),
-      upsert: jest.fn(async () => {
+      upsert: jest.fn(() => {
         individual = true;
+
+        return Promise.resolve();
       }),
-      delete: jest.fn(async () => {
+      delete: jest.fn(() => {
         individual = false;
+
+        return Promise.resolve();
       }),
     };
     auditRepo = { save: jest.fn().mockResolvedValue({}) };
@@ -64,22 +69,27 @@ describe('explicit facility stock access', () => {
       getRepository: (entity: unknown) => {
         if (entity === IntegrationConfiguration)
           return {
-            findOneBy: async () => ({
-              values: { pcn_registry_name: 'Configured pharmacy display' },
-            }),
+            findOneBy: () =>
+              Promise.resolve({
+                values: { pcn_registry_name: 'Configured pharmacy display' },
+              }),
           };
         if (entity === User) return usersRepo;
         if (entity === RolePermission)
           return {
-            findBy: async (query: { role_id: number }) =>
-              (query.role_id === 99
-                ? ['admin.access', 'user.update', 'medicine.update']
-                : permissions
-              ).map((permission) => ({ permission })),
+            findBy: (query: { role_id: number }) =>
+              Promise.resolve(
+                (query.role_id === 99
+                  ? ['admin.access', 'user.update', 'medicine.update']
+                  : permissions
+                ).map((permission) => ({ permission })),
+              ),
           };
         if (entity === InventoryAccessGrant) return grantsRepo;
         if (entity === VerificationApplication)
-          return { findOne: async () => ({ status: applicationStatus }) };
+          return {
+            findOne: () => Promise.resolve({ status: applicationStatus }),
+          };
         if (entity === AuditLog) return auditRepo;
         throw new Error('Unexpected entity');
       },
@@ -87,8 +97,8 @@ describe('explicit facility stock access', () => {
     db = {
       manager,
       getRepository: manager.getRepository,
-      transaction: async (callback) =>
-        callback(manager as unknown as EntityManager),
+      transaction: (callback: (value: typeof manager) => Promise<unknown>) =>
+        callback(manager),
     } as unknown as DataSource;
     access = new StockAccessService(db);
     users = new UsersService(
@@ -139,10 +149,10 @@ describe('explicit facility stock access', () => {
       );
       const info = await users.authenticatedUser('member');
       expect(info.permissions).toEqual(
-        expect.arrayContaining(['facility.users.manage', 'inventory.manage']),
+        matchers.arrayContaining(['facility.users.manage', 'inventory.manage']),
       );
       expect(info.allowed_pages).toEqual(
-        expect.arrayContaining([
+        matchers.arrayContaining([
           'pg-dashboard',
           'pg-users',
           'pg-inventory',
@@ -267,7 +277,7 @@ describe('explicit facility stock access', () => {
       sessionRefreshRequired: true,
     });
     expect(grantsRepo.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ user_id: 'member', facility_id: 'facility' }),
+      matchers.objectContaining({ user_id: 'member', facility_id: 'facility' }),
       ['user_id', 'facility_id'],
     );
     expect((await users.authenticatedUser('member')).permissions).toContain(

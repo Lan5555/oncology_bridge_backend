@@ -3,6 +3,10 @@ import { DataSource } from 'typeorm';
 import { v2 as cloudinary } from 'cloudinary';
 import sharp from 'sharp';
 import { Writable } from 'node:stream';
+type UploadCallback = (
+  error: Error | null,
+  result?: { public_id: string; secure_url: string },
+) => void;
 import {
   CloudinaryImagesService,
   ListingUpload,
@@ -10,7 +14,7 @@ import {
 
 describe('Cloudinary image validation and rollback', () => {
   let service: CloudinaryImagesService;
-  let database: { query: jest.Mock };
+  let database: { query: jest.Mock<Promise<unknown>, [string, ...unknown[]]> };
   let uploaded: Buffer[];
   const config = new ConfigService({
     CLOUDINARY_CLOUD_NAME: 'test',
@@ -30,7 +34,9 @@ describe('Cloudinary image validation and rollback', () => {
   };
   beforeEach(() => {
     database = {
-      query: jest.fn().mockResolvedValue([{ id: 'pending-image' }]),
+      query: jest
+        .fn<Promise<unknown>, [string, ...unknown[]]>()
+        .mockResolvedValue([{ id: 'pending-image' }]),
     };
     uploaded = [];
     service = new CloudinaryImagesService(
@@ -38,9 +44,9 @@ describe('Cloudinary image validation and rollback', () => {
       database as unknown as DataSource,
     );
     jest.spyOn(cloudinary.uploader, 'upload_stream').mockImplementation(
-      ((options: any, callback: any) =>
+      ((options: { public_id: string }, callback: UploadCallback) =>
         new Writable({
-          write(chunk, _encoding, done) {
+          write(chunk: Buffer, _encoding, done) {
             uploaded.push(Buffer.from(chunk));
             done();
           },
@@ -51,7 +57,11 @@ describe('Cloudinary image validation and rollback', () => {
             });
             done();
           },
-        })) as any,
+        })) as unknown as
+        | ((
+            callback?: import('cloudinary').UploadResponseCallback,
+          ) => import('cloudinary').UploadStream)
+        | undefined,
     );
     jest
       .spyOn(cloudinary.uploader, 'destroy')
@@ -74,7 +84,7 @@ describe('Cloudinary image validation and rollback', () => {
   it('rejects corrupt, unsupported, empty, oversized and excessive photos before upload', async () => {
     await expect(service.upload([])).rejects.toMatchObject({ status: 422 });
     await expect(
-      service.upload(Array(6).fill(await image())),
+      service.upload(Array<ListingUpload>(6).fill(await image())),
     ).rejects.toMatchObject({ status: 422 });
     for (const buffer of [
       Buffer.alloc(0),
@@ -103,7 +113,7 @@ describe('Cloudinary image validation and rollback', () => {
   it('cleans attempted public IDs and retains durable records on partial failure', async () => {
     (cloudinary.uploader.upload_stream as jest.Mock)
       .mockImplementationOnce(
-        ((options: any, callback: any) =>
+        (options: { public_id: string }, callback: UploadCallback) =>
           new Writable({
             final(done) {
               callback(null, {
@@ -115,10 +125,10 @@ describe('Cloudinary image validation and rollback', () => {
             write(_chunk, _encoding, done) {
               done();
             },
-          })) as any,
+          }),
       )
       .mockImplementationOnce(
-        ((_options: any, callback: any) =>
+        (_options: { public_id: string }, callback: UploadCallback) =>
           new Writable({
             final(done) {
               callback(new Error('provider failure'));
@@ -127,7 +137,7 @@ describe('Cloudinary image validation and rollback', () => {
             write(_chunk, _encoding, done) {
               done();
             },
-          })) as any,
+          }),
       );
     await expect(
       service.upload([await image(), await image()]),

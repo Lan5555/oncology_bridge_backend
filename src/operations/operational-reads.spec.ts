@@ -1,3 +1,5 @@
+import { matchers } from '../../test/matchers';
+import { jsonAt, jsonArrayAt } from '../../test/json-response';
 import { PGlite } from '@electric-sql/pglite';
 import { Test } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
@@ -263,32 +265,38 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
     const getRepository = (entity: unknown) => {
       if (entity === User)
         return {
-          findOne: async (options: { where: { id: string } }) =>
-            actors.get(options.where.id) ?? null,
+          findOne: (options: { where: { id: string } }) =>
+            Promise.resolve(actors.get(options.where.id) ?? null),
         };
       if (entity === RolePermission)
         return {
-          findBy: async (where: { role_id: number }) =>
-            sql('SELECT permission FROM role_permissions WHERE role_id=$1', [
-              where.role_id,
-            ]),
+          findBy: (where: { role_id: number }) =>
+            Promise.resolve(
+              sql('SELECT permission FROM role_permissions WHERE role_id=$1', [
+                where.role_id,
+              ]),
+            ),
         };
       if (entity === VerificationApplication)
-        return { findOne: async () => ({ status: 'VERIFIED' }) };
+        return { findOne: () => Promise.resolve({ status: 'VERIFIED' }) };
       throw new Error('Unexpected repository');
     };
     const db = {
       getRepository,
-      transaction: async (
+      transaction: (
         _isolation: string,
         callback: (manager: unknown) => unknown,
       ) => {
-        if (failDatabase) throw new Error('database offline');
-        return pg.transaction(async (tx) =>
-          callback({
-            query: async (text: string, args: unknown[]) =>
-              (await tx.query(text, args)).rows,
-          }),
+        if (failDatabase) return Promise.reject(new Error('database offline'));
+        return Promise.resolve(
+          pg.transaction((tx) =>
+            Promise.resolve(
+              callback({
+                query: async (text: string, args: unknown[]) =>
+                  (await tx.query(text, args)).rows,
+              }),
+            ),
+          ),
         );
       },
     };
@@ -348,6 +356,8 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
     ].map((n) =>
       jwt.sign({ id: id(n), role: 'untrusted-role', facilityId: id(2) }),
     );
+
+    return Promise.resolve();
   });
   afterAll(async () => {
     await app?.close();
@@ -357,7 +367,9 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
   it.each(paginatedEndpoints)(
     '%s returns network-wide records from the explicit admin bearer, ignoring a facility cookie',
     async (_resource, path) => {
-      const response = await request(app.getHttpServer())
+      const response = await request(
+        app.getHttpServer() as import('node:http').Server,
+      )
         .get(path)
         .set('Cookie', `session=${facilityToken}`)
         .set('Authorization', `Bearer ${adminToken}`)
@@ -366,8 +378,8 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
         success: true,
         data: { page: 1, limit: 25 },
       });
-      expect(response.body.data.total).toBeGreaterThanOrEqual(2);
-      const payload = JSON.stringify(response.body.data);
+      expect(jsonAt(response.body, 'data', 'total')).toBeGreaterThanOrEqual(2);
+      const payload = JSON.stringify(jsonAt(response.body, 'data'));
       expect(payload).toContain('Alpha');
       expect(payload).toContain('Beta');
       for (const secret of [
@@ -385,11 +397,11 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
   it.each(endpoints)(
     '%s checks the corresponding read grant rather than navigation or JWT-supplied claims',
     async (_resource, path) => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as import('node:http').Server)
         .get(path)
         .set('Authorization', `Bearer ${deniedToken}`)
         .expect(403);
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as import('node:http').Server)
         .get(path)
         .set('Cookie', `session=${adminToken}`)
         .expect(401);
@@ -400,28 +412,32 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
     async (_resource, path) => {
       const join = path.includes('?') ? '&' : '?';
       const get = (query: string) =>
-        request(app.getHttpServer())
+        request(app.getHttpServer() as import('node:http').Server)
           .get(`${path}${join}${query}`)
           .set('Authorization', `Bearer ${adminToken}`);
       const first = await get('page=1&limit=1').expect(200);
       const second = await get('page=2&limit=1').expect(200);
-      expect(first.body.data.total).toBe(second.body.data.total);
-      expect(first.body.data.items[0].id).not.toBe(
-        second.body.data.items[0].id,
+      expect(jsonAt(first.body, 'data', 'total')).toBe(
+        jsonAt(second.body, 'data', 'total'),
+      );
+      expect(jsonAt(first.body, 'data', 'items', 0, 'id')).not.toBe(
+        jsonAt(second.body, 'data', 'items', 0, 'id'),
       );
       const search = await get('q=Beta&page=1&limit=1').expect(200);
-      expect(search.body.data.total).toBeGreaterThanOrEqual(1);
-      expect(JSON.stringify(search.body.data.items)).toContain('Beta');
+      expect(jsonAt(search.body, 'data', 'total')).toBeGreaterThanOrEqual(1);
+      expect(JSON.stringify(jsonAt(search.body, 'data', 'items'))).toContain(
+        'Beta',
+      );
       const empty = await get('q=does-not-exist&page=1&limit=25').expect(200);
-      expect(empty.body.data).toMatchObject({
+      expect(jsonAt(empty.body, 'data')).toMatchObject({
         items: [],
         total: 0,
         page: 1,
         limit: 25,
       });
       const beyond = await get('page=100&limit=25').expect(200);
-      expect(beyond.body.data.items).toEqual([]);
-      expect(beyond.body.data.total).toBeGreaterThan(0);
+      expect(jsonAt(beyond.body, 'data', 'items')).toEqual([]);
+      expect(jsonAt(beyond.body, 'data', 'total')).toBeGreaterThan(0);
     },
   );
   it.each(
@@ -431,28 +447,40 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
   )(
     '%s keeps the facility bearer scoped even when an admin cookie is present',
     async (resource, path) => {
-      const response = await request(app.getHttpServer())
+      const response = await request(
+        app.getHttpServer() as import('node:http').Server,
+      )
         .get(path)
         .set('Cookie', `session=${adminToken}`)
         .set('Authorization', `Bearer ${facilityToken}`)
         .expect(200);
       // A buyer facility can review its own marketplace invoice from a different supplier.
       if (resource !== 'invoices') {
-        expect(response.body.data.total).toBe(1);
-        expect(JSON.stringify(response.body.data.items)).not.toContain('Beta');
-      } else expect(response.body.data.total).toBe(2);
-      await request(app.getHttpServer())
+        expect(jsonAt(response.body, 'data', 'total')).toBe(1);
+        expect(
+          JSON.stringify(jsonAt(response.body, 'data', 'items')),
+        ).not.toContain('Beta');
+      } else expect(jsonAt(response.body, 'data', 'total')).toBe(2);
+      await request(app.getHttpServer() as import('node:http').Server)
         .get(`${path}${path.includes('?') ? '&' : '?'}facilityId=${id(2)}`)
         .set('Authorization', `Bearer ${facilityToken}`)
         .expect(403);
     },
   );
   it('includes all marketplace publication states and uploaded-image detail links', async () => {
-    const response = await request(app.getHttpServer())
+    const response = await request(
+      app.getHttpServer() as import('node:http').Server,
+    )
       .get('/admin/api/marketplace/listings')
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(200);
-    expect(new Set(response.body.data.items.map((row) => row.status))).toEqual(
+    expect(
+      new Set(
+        jsonArrayAt(response.body, 'data', 'items').map((row) =>
+          jsonAt(row, 'status'),
+        ),
+      ),
+    ).toEqual(
       new Set([
         'DRAFT',
         'PENDING_REVIEW',
@@ -461,30 +489,30 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
         'WITHDRAWN',
       ]),
     );
-    expect(response.body.data.items[0]).toMatchObject({
-      inventoryItemId: expect.any(String),
+    expect(jsonAt(response.body, 'data', 'items', 0)).toMatchObject({
+      inventoryItemId: matchers.any(String),
       unitPriceNaira: 1250.25,
-      seller: { id: expect.any(String) },
-      images: [{ url: expect.stringMatching(/^https:/) }],
+      seller: { id: matchers.any(String) },
+      images: [{ url: matchers.stringMatching(/^https:/) }],
     });
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get('/admin/api/marketplace/listings')
       .set('Authorization', `Bearer ${facilityToken}`)
       .expect(403);
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get('/api/research/inquiries')
       .set('Authorization', `Bearer ${facilityToken}`)
       .expect(403);
   });
   it('supports SUPERADMIN and honors configured network MFA', async () => {
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get('/api/inventory')
       .set('Authorization', `Bearer ${superToken}`)
       .expect(200);
     const previous = process.env.ADMIN_MFA_REQUIRED;
     process.env.ADMIN_MFA_REQUIRED = 'true';
     try {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as import('node:http').Server)
         .get('/api/inventory')
         .set('Authorization', `Bearer ${adminToken}`)
         .expect(403);
@@ -497,24 +525,26 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
     await sql('UPDATE medicines SET deleted_at=now() WHERE id=$1', [id(21)]);
     try {
       const getInventory = (query: string, token = facilityToken) =>
-        request(app.getHttpServer())
+        request(app.getHttpServer() as import('node:http').Server)
           .get('/api/inventory' + query)
           .set('Authorization', `Bearer ${token}`);
-      expect((await getInventory('').expect(200)).body.data).toMatchObject({
+      expect(
+        jsonAt((await getInventory('').expect(200)).body, 'data'),
+      ).toMatchObject({
         total: 0,
         items: [],
       });
       const historical = await getInventory(
         '?includeDeletedMedicines=true',
       ).expect(200);
-      expect(historical.body.data).toMatchObject({
+      expect(jsonAt(historical.body, 'data')).toMatchObject({
         total: 1,
         items: [
           {
             medicine: {
               id: id(21),
               active: false,
-              deleted_at: expect.any(String),
+              deleted_at: matchers.any(String),
             },
             medicine_deleted: true,
             medicine_active: false,
@@ -523,8 +553,8 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
       });
       const otherSession = await getInventory('', superToken).expect(200);
       expect(
-        otherSession.body.data.items.some(
-          (row: any) => row.medicine?.id === id(21),
+        jsonArrayAt(otherSession.body, 'data', 'items').some(
+          (row) => jsonAt(row, 'medicine', 'id') === id(21),
         ),
       ).toBe(false);
       await getInventory(
@@ -547,11 +577,13 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
       [id(901), id(31)],
     );
     try {
-      const first = await request(app.getHttpServer())
+      const first = await request(
+        app.getHttpServer() as import('node:http').Server,
+      )
         .get('/api/inventory?page=1&limit=1')
         .set('Authorization', `Bearer ${facilityToken}`)
         .expect(200);
-      expect(first.body.data).toMatchObject({
+      expect(jsonAt(first.body, 'data')).toMatchObject({
         total: 2,
         page: 1,
         limit: 1,
@@ -568,11 +600,13 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
           },
         ],
       });
-      const second = await request(app.getHttpServer())
+      const second = await request(
+        app.getHttpServer() as import('node:http').Server,
+      )
         .get('/api/inventory?page=2&limit=1')
         .set('Authorization', `Bearer ${facilityToken}`)
         .expect(200);
-      expect(second.body.data).toMatchObject({
+      expect(jsonAt(second.body, 'data')).toMatchObject({
         total: 2,
         page: 2,
         items: [
@@ -585,7 +619,7 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
           },
         ],
       });
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as import('node:http').Server)
         .get(`/api/inventory?facilityId=${id(2)}`)
         .set('Authorization', `Bearer ${facilityToken}`)
         .expect(403);
@@ -601,13 +635,22 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
       id(21),
     ]);
     try {
-      const result = await request(app.getHttpServer())
+      const result = await request(
+        app.getHttpServer() as import('node:http').Server,
+      )
         .get('/api/inventory')
         .set('Authorization', `Bearer ${facilityToken}`)
         .expect(200);
-      expect(result.body.data.items[0].medicine.storage_temperature).toBe(
-        approved,
-      );
+      expect(
+        jsonAt(
+          result.body,
+          'data',
+          'items',
+          0,
+          'medicine',
+          'storage_temperature',
+        ),
+      ).toBe(approved);
     } finally {
       await sql(
         "UPDATE medicines SET storage_temperature='2-8 C' WHERE id=$1",
@@ -619,7 +662,7 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
     const unitId = id(91),
       readingId = id(101);
     const get = () =>
-      request(app.getHttpServer())
+      request(app.getHttpServer() as import('node:http').Server)
         .get('/api/storage-units')
         .set('Authorization', `Bearer ${facilityToken}`)
         .expect(200);
@@ -632,21 +675,21 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
         'UPDATE temperature_logs SET temperature=0,recorded_at=now() WHERE id=$1',
         [readingId],
       );
-      expect((await get()).body.data.items[0]).toMatchObject({
+      expect(jsonAt((await get()).body, 'data', 'items', 0)).toMatchObject({
         currentC: 0,
         targetMin: 10,
         targetMax: 20,
         readingState: 'BREACH',
       });
       await sql('UPDATE storage_units SET target_min=0 WHERE id=$1', [unitId]);
-      expect((await get()).body.data.items[0]).toMatchObject({
+      expect(jsonAt((await get()).body, 'data', 'items', 0)).toMatchObject({
         currentC: 0,
         readingState: 'NOMINAL',
       });
       await sql('UPDATE storage_units SET target_min=NULL WHERE id=$1', [
         unitId,
       ]);
-      expect((await get()).body.data.items[0]).toMatchObject({
+      expect(jsonAt((await get()).body, 'data', 'items', 0)).toMatchObject({
         targetMin: null,
         targetMax: null,
         readingState: 'UNKNOWN',
@@ -655,7 +698,7 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
       await sql('UPDATE temperature_logs SET recorded_at=NULL WHERE id=$1', [
         readingId,
       ]);
-      expect((await get()).body.data.items[0]).toMatchObject({
+      expect(jsonAt((await get()).body, 'data', 'items', 0)).toMatchObject({
         currentC: null,
         currentReadingAt: null,
         readingState: 'UNKNOWN',
@@ -664,7 +707,9 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
         "UPDATE storage_units SET last_seen_at=now()-interval '1 hour' WHERE id=$1",
         [unitId],
       );
-      expect((await get()).body.data.items[0].readingState).toBe('OFFLINE');
+      expect(
+        jsonAt((await get()).body, 'data', 'items', 0, 'readingState'),
+      ).toBe('OFFLINE');
     } finally {
       await sql(
         'UPDATE storage_units SET last_seen_at=NULL,target_min=2,target_max=8 WHERE id=$1',
@@ -679,21 +724,25 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
   it('returns unknown availability for missing quantities while retaining genuine zero', async () => {
     try {
       await sql('UPDATE inventory SET quantity=NULL WHERE id=$1', [id(31)]);
-      let response = await request(app.getHttpServer())
+      let response = await request(
+        app.getHttpServer() as import('node:http').Server,
+      )
         .get('/api/inventory')
         .set('Authorization', `Bearer ${facilityToken}`)
         .expect(200);
-      expect(response.body.data.items[0]).toMatchObject({
+      expect(jsonAt(response.body, 'data', 'items', 0)).toMatchObject({
         quantity: null,
         qty: null,
         availableQuantity: null,
       });
       await sql('UPDATE inventory SET quantity=0 WHERE id=$1', [id(31)]);
-      response = await request(app.getHttpServer())
+      response = await request(
+        app.getHttpServer() as import('node:http').Server,
+      )
         .get('/api/inventory')
         .set('Authorization', `Bearer ${facilityToken}`)
         .expect(200);
-      expect(response.body.data.items[0]).toMatchObject({
+      expect(jsonAt(response.body, 'data', 'items', 0)).toMatchObject({
         quantity: 0,
         qty: 0,
         availableQuantity: 0,
@@ -703,12 +752,18 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
     }
   });
   it('caps catalogue page size and returns selectable fields and actual pagination metadata', async () => {
-    const result = await request(app.getHttpServer())
+    const result = await request(
+      app.getHttpServer() as import('node:http').Server,
+    )
       .get('/api/medicines?page=1&limit=1000')
       .set('Authorization', `Bearer ${facilityToken}`)
       .expect(200);
-    expect(result.body.data).toMatchObject({ page: 1, limit: 100, total: 1 });
-    expect(result.body.data.items[0]).toMatchObject({
+    expect(jsonAt(result.body, 'data')).toMatchObject({
+      page: 1,
+      limit: 100,
+      total: 1,
+    });
+    expect(jsonAt(result.body, 'data', 'items', 0)).toMatchObject({
       id: id(21),
       generic_name: 'Alpha',
       brand_name: 'Alpha',
@@ -718,11 +773,11 @@ describe('operational reads with real JWTs and PostgreSQL queries', () => {
     });
   });
   it('rejects invalid pagination, makes missing lists explicit, and never reports an outage as empty success', async () => {
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get('/api/inventory?page=0')
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(400);
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get('/api/inventory?limit=0')
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(400);

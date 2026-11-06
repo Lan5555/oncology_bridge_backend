@@ -77,3 +77,16 @@ export class MarketplacePaymentsController {
     return this.service.webhook(req.rawBody, signature, body);
   }
 }
+
+@Controller('api/payments/flutterwave')
+export class FlutterwavePaymentsController {
+  constructor(private readonly service: MarketplaceService) {}
+  @Post('webhook')
+  @HttpCode(200)
+  webhook(
+    @Headers('verif-hash') signature: string | undefined,
+    @Body() body: unknown,
+  ) {
+    return this.service.flutterwaveWebhook(signature, body);
+  }
+}

@@ -1,3 +1,4 @@
+import { matchers } from '../../test/matchers';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { Repository } from 'typeorm';
@@ -11,30 +12,34 @@ import { EmailService } from '../email/email.service';
 describe('stock grants on session refresh', () => {
   it('reloads grants for both the returned user and newly issued tokens', async () => {
     let granted = true;
-    const authenticatedUser = jest.fn(async () => ({
-      account_type: 'PHARMACIST',
-      verification_status: 'VERIFIED',
-      permissions: granted
-        ? ['facility.users.manage', 'inventory.manage', 'marketplace.list']
-        : ['facility.users.manage'],
-      allowed_pages: granted
-        ? [
-            'pg-dashboard',
-            'pg-settings',
-            'pg-inventory',
-            'pg-scan',
-            'pg-medicines',
-          ]
-        : ['pg-dashboard', 'pg-settings'],
-      can_manage_facility_users: true,
-      can_manage_inventory: granted,
-    }));
+    const authenticatedUser = jest.fn(() =>
+      Promise.resolve({
+        account_type: 'PHARMACIST',
+        verification_status: 'VERIFIED',
+        permissions: granted
+          ? ['facility.users.manage', 'inventory.manage', 'marketplace.list']
+          : ['facility.users.manage'],
+        allowed_pages: granted
+          ? [
+              'pg-dashboard',
+              'pg-settings',
+              'pg-inventory',
+              'pg-scan',
+              'pg-medicines',
+            ]
+          : ['pg-dashboard', 'pg-settings'],
+        can_manage_facility_users: true,
+        can_manage_inventory: granted,
+      }),
+    );
     const jwt = {
       verifyAsync: jest.fn().mockResolvedValue({
         tokenType: 'refresh',
         email: 'user@test.example',
       }),
-      signAsync: jest.fn().mockResolvedValue('rotated-token'),
+      signAsync: jest
+        .fn<Promise<string>, [unknown]>()
+        .mockResolvedValue('rotated-token'),
     };
     const session = {
       user: { id: 'user', active: true, role: { name: 'FACILITY_ADMIN' } },
@@ -55,15 +60,15 @@ describe('stock grants on session refresh', () => {
     const first = await service.refreshToken('old-token');
     expect(first.data).toMatchObject({
       user: {
-        permissions: expect.arrayContaining([
+        permissions: matchers.arrayContaining([
           'inventory.manage',
           'marketplace.list',
         ]),
-        allowed_pages: expect.arrayContaining(['pg-scan']),
+        allowed_pages: matchers.arrayContaining(['pg-scan']),
       },
     });
     expect(jwt.signAsync.mock.calls[0][0]).toMatchObject({
-      permissions: expect.arrayContaining(['inventory.manage']),
+      permissions: matchers.arrayContaining(['inventory.manage']),
       can_manage_inventory: true,
     });
     granted = false;
@@ -79,6 +84,8 @@ describe('stock grants on session refresh', () => {
       can_manage_inventory: false,
     });
     expect(authenticatedUser).toHaveBeenCalledTimes(2);
+
+    return Promise.resolve();
   });
   it('includes listing permission keys in login user data and tokens', async () => {
     const user = {
@@ -93,14 +100,20 @@ describe('stock grants on session refresh', () => {
     const users = {
       findOne: jest.fn().mockResolvedValue(user),
       save: jest.fn().mockResolvedValue(user),
-      manager: { getRepository: () => ({ findOne: async () => null }) },
+      manager: {
+        getRepository: () => ({ findOne: () => Promise.resolve(null) }),
+      },
     };
     const sessions = {
       findOne: jest.fn().mockResolvedValue(null),
-      create: jest.fn((row) => row),
+      create: jest.fn((row: unknown) => row),
       save: jest.fn(),
     };
-    const jwt = { signAsync: jest.fn().mockResolvedValue('token') };
+    const jwt = {
+      signAsync: jest
+        .fn<Promise<string>, [unknown]>()
+        .mockResolvedValue('token'),
+    };
     const authenticatedUser = {
       id: 'seller',
       account_type: 'PHARMACY_STORE',
@@ -116,7 +129,7 @@ describe('stock grants on session refresh', () => {
         decrypt: () => 'seller@example.test',
       } as unknown as EncryptionService,
       {
-        authenticatedUser: async () => authenticatedUser,
+        authenticatedUser: () => Promise.resolve(authenticatedUser),
       } as unknown as UsersService,
       {} as EmailService,
     );
@@ -131,5 +144,7 @@ describe('stock grants on session refresh', () => {
     expect(jwt.signAsync.mock.calls[0][0]).toMatchObject({
       permissions: ['marketplace.list'],
     });
+
+    return Promise.resolve();
   });
 });

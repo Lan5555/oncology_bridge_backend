@@ -1,3 +1,4 @@
+import { matchers } from '../../test/matchers';
 import {
   BadRequestException,
   ConflictException,
@@ -6,6 +7,21 @@ import {
 } from '@nestjs/common';
 import { createHash, createHmac } from 'crypto';
 import { IotReadingsService } from './iot-readings.service';
+import { IotDevice } from './entities/iot-device.entity';
+
+interface IotReadingInternals {
+  authenticate(
+    headers: {
+      deviceId: string;
+      timestamp: string;
+      nonce: string;
+      signature: string;
+    },
+    body: Buffer,
+    ip: string,
+  ): Promise<IotDevice>;
+  validateBatch(device: IotDevice, payload: unknown): unknown[];
+}
 
 describe('IotReadingsService device security and batch validation', () => {
   const secret = 'a-test-only-device-signing-secret-with-sufficient-entropy';
@@ -13,12 +29,12 @@ describe('IotReadingsService device security and batch validation', () => {
   const deviceId = 'test-sensor-01';
   const facilityId = '22222222-2222-4222-8222-222222222222';
   let service: IotReadingsService;
-  let device: any;
+  let device: IotDevice;
   let nonceSave: jest.Mock;
 
   beforeEach(() => {
     process.env.IOT_DEVICE_KEYS = JSON.stringify({ TEST_DEVICE_KEY: secret });
-    device = {
+    device = Object.assign(new IotDevice(), {
       id: '33333333-3333-4333-8333-333333333333',
       device_id: deviceId,
       facility_id: facilityId,
@@ -37,20 +53,36 @@ describe('IotReadingsService device security and batch validation', () => {
           },
         },
       ],
-    };
+    });
     nonceSave = jest.fn().mockResolvedValue({});
     service = new IotReadingsService(
-      { findOne: jest.fn().mockResolvedValue(device) } as any,
-      {} as any,
       {
-        create: jest.fn((row) => row),
+        findOne: jest.fn().mockResolvedValue(device),
+      } as unknown as import('typeorm').Repository<
+        import('./entities/iot-device.entity').IotDevice
+      >,
+      {} as unknown as import('typeorm').Repository<
+        import('./entities/iot-device-unit.entity').IotDeviceUnit
+      >,
+      {
+        create: jest.fn((row: unknown) => row),
         save: nonceSave,
-      } as any,
-      {} as any,
-      {} as any,
-      {} as any,
-      {} as any,
-      { publish: jest.fn() } as any,
+      } as unknown as import('typeorm').Repository<
+        import('./entities/iot-request-nonce.entity').IotRequestNonce
+      >,
+      {} as unknown as import('typeorm').Repository<
+        import('../storage_units/entities/storage-unit.entity').StorageUnit
+      >,
+      {} as unknown as import('typeorm').Repository<
+        import('../temperature_log/entities/temperature_log.entity').TemperatureLog
+      >,
+      {} as unknown as import('typeorm').Repository<
+        import('../cold_chain_events/entities/cold-chain-outbox.entity').ColdChainOutbox
+      >,
+      {} as unknown as import('typeorm').DataSource,
+      {
+        publish: jest.fn(),
+      } as unknown as import('../cold_chain_events/cold-chain-event-bus').ColdChainEventBus,
     );
   });
 
@@ -72,13 +104,13 @@ describe('IotReadingsService device security and batch validation', () => {
 
   it('authenticates a valid raw-body HMAC and stores its nonce', async () => {
     const request = signedRequest(Buffer.from('{"readings":[]}'));
-    await (service as any).authenticate(
+    await (service as unknown as IotReadingInternals).authenticate(
       request.headers,
       request.body,
       '127.0.0.1',
     );
     expect(nonceSave).toHaveBeenCalledWith(
-      expect.objectContaining({
+      matchers.objectContaining({
         device_id: device.id,
         nonce: request.headers.nonce,
       }),
@@ -88,7 +120,7 @@ describe('IotReadingsService device security and batch validation', () => {
   it('rejects a tampered request body', async () => {
     const request = signedRequest(Buffer.from('{"readings":[]}'));
     await expect(
-      (service as any).authenticate(
+      (service as unknown as IotReadingInternals).authenticate(
         request.headers,
         Buffer.from('{"readings":[{}]}'),
         '127.0.0.1',
@@ -101,21 +133,28 @@ describe('IotReadingsService device security and batch validation', () => {
     nonceSave.mockRejectedValue({ code: '23505' });
     const request = signedRequest(Buffer.from('{"readings":[]}'));
     await expect(
-      (service as any).authenticate(request.headers, request.body, '127.0.0.1'),
+      (service as unknown as IotReadingInternals).authenticate(
+        request.headers,
+        request.body,
+        '127.0.0.1',
+      ),
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
   it('accepts readings only for an assigned unit within sensor limits', () => {
-    const batch = (service as any).validateBatch(device, {
-      readings: [
-        {
-          unitId,
-          celsius: 5.2,
-          recordedAt: '2026-10-14T12:30:00.000Z',
-          sequence: 1842,
-        },
-      ],
-    });
+    const batch = (service as unknown as IotReadingInternals).validateBatch(
+      device,
+      {
+        readings: [
+          {
+            unitId,
+            celsius: 5.2,
+            recordedAt: '2026-10-14T12:30:00.000Z',
+            sequence: 1842,
+          },
+        ],
+      },
+    );
     expect(batch[0]).toEqual({
       unitId,
       celsius: 5.2,
@@ -126,7 +165,7 @@ describe('IotReadingsService device security and batch validation', () => {
 
   it('rejects cross-facility units and out-of-range sensor readings', () => {
     expect(() =>
-      (service as any).validateBatch(device, {
+      (service as unknown as IotReadingInternals).validateBatch(device, {
         readings: [
           {
             unitId: '44444444-4444-4444-8444-444444444444',
@@ -138,7 +177,7 @@ describe('IotReadingsService device security and batch validation', () => {
       }),
     ).toThrow(ForbiddenException);
     expect(() =>
-      (service as any).validateBatch(device, {
+      (service as unknown as IotReadingInternals).validateBatch(device, {
         readings: [
           {
             unitId,
@@ -153,7 +192,7 @@ describe('IotReadingsService device security and batch validation', () => {
 
   it('rejects conflicting sequence numbers within one batch', () => {
     expect(() =>
-      (service as any).validateBatch(device, {
+      (service as unknown as IotReadingInternals).validateBatch(device, {
         readings: [
           {
             unitId,
@@ -182,7 +221,7 @@ describe('IotReadingsService device security and batch validation', () => {
     'requires actual measurement timestamp with timezone: %s',
     (recordedAt) => {
       expect(() =>
-        (service as any).validateBatch(device, {
+        (service as unknown as IotReadingInternals).validateBatch(device, {
           readings: [{ unitId, celsius: 0, recordedAt, sequence: 1 }],
         }),
       ).toThrow('valid ISO timestamp');

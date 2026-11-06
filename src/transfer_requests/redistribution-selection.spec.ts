@@ -1,3 +1,4 @@
+import { matchers } from '../../test/matchers';
 import { PGlite } from '@electric-sql/pglite';
 import { DataSource, EntitySchema } from 'typeorm';
 import { readFileSync } from 'node:fs';
@@ -323,8 +324,8 @@ describe('redistribution admission using real repositories and PostgreSQL storag
         [id(1)],
       );
       expect((await service.suggest(id(20), id(10))).data).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ id: id(recipient) }),
+        matchers.arrayContaining([
+          matchers.objectContaining({ id: id(recipient) }),
         ]),
       );
       await service.create(

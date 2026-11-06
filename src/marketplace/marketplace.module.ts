@@ -1,8 +1,10 @@
+import { FlutterwaveService } from './flutterwave.service';
 import { Module } from '@nestjs/common';
 import { OrdersModule } from '../orders/orders.module';
 import { ConfigModule } from '@nestjs/config';
 import { EncryptionModule } from '../encryption/encryption.module';
 import {
+  FlutterwavePaymentsController,
   MarketplaceController,
   MarketplacePaymentsController,
 } from './marketplace.controller';
@@ -12,8 +14,17 @@ import { PaystackService } from './paystack.service';
 
 @Module({
   imports: [ConfigModule, EncryptionModule, OrdersModule],
-  controllers: [MarketplaceController, MarketplacePaymentsController],
-  providers: [MarketplaceService, CloudinaryImagesService, PaystackService],
+  controllers: [
+    MarketplaceController,
+    MarketplacePaymentsController,
+    FlutterwavePaymentsController,
+  ],
+  providers: [
+    MarketplaceService,
+    CloudinaryImagesService,
+    PaystackService,
+    FlutterwaveService,
+  ],
   exports: [MarketplaceService],
 })
 export class MarketplaceModule {}

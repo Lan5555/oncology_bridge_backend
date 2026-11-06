@@ -1,3 +1,6 @@
+import { matchers } from '../../test/matchers';
+import { jsonAt, jsonArrayAt } from '../../test/json-response';
+import { FlutterwaveService } from './flutterwave.service';
 import { transactionQueryBuilder } from '../../test/typeorm-query-builder';
 import { MedicineService } from '../medicine/medicine.service';
 import { OperationalReadsService } from '../operations/operational-reads.service';
@@ -11,7 +14,7 @@ import { Medicine } from '../medicine/entities/medicine.entity';
 import { Hospital } from '../hospital/entities/hospital.entity';
 import { AuditLog } from '../audit_log/entities/audit_log.entity';
 import { StockAccessService } from '../guards/stock-access.service';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { PGlite } from '@electric-sql/pglite';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
@@ -44,6 +47,15 @@ import {
 } from './marketplace.dto';
 
 jest.setTimeout(60000);
+interface CatalogueQueryDouble {
+  where(sql: string, parameters: Record<string, unknown>): CatalogueQueryDouble;
+  andWhere(
+    sql: string,
+    parameters: Record<string, unknown>,
+  ): CatalogueQueryDouble;
+  setLock(): CatalogueQueryDouble;
+  getOne(): Promise<unknown>;
+}
 const seller = '00000000-0000-4000-8000-000000000001';
 const buyer = '00000000-0000-4000-8000-000000000002';
 const other = '00000000-0000-4000-8000-000000000003';
@@ -81,8 +93,9 @@ describe('marketplace PostgreSQL behavior', () => {
     assertConfigured: jest.Mock;
     authenticateWebhook: jest.Mock;
   };
+  let flutterwave: typeof paystack;
   const query = async (sql: string, args: unknown[] = []) =>
-    (await pg.query(sql, args)).rows as any[];
+    (await pg.query<Record<string, unknown>>(sql, args)).rows;
 
   beforeAll(async () => {
     pg = new PGlite();
@@ -137,6 +150,12 @@ describe('marketplace PostgreSQL behavior', () => {
         'utf8',
       ),
     );
+    await pg.exec(
+      readFileSync(
+        resolve(process.cwd(), 'database/marketplace-payment-providers.sql'),
+        'utf8',
+      ),
+    );
     const db = {
       getRepository: (entity: unknown) => {
         if (entity === User)
@@ -164,26 +183,43 @@ describe('marketplace PostgreSQL behavior', () => {
           };
         if (entity === RolePermission)
           return {
-            findBy: async ({ role_id }: { role_id: number }) =>
-              query('SELECT * FROM role_permissions WHERE role_id=$1', [
-                role_id,
-              ]),
+            findBy: ({ role_id }: { role_id: number }) =>
+              Promise.resolve(
+                query('SELECT * FROM role_permissions WHERE role_id=$1', [
+                  role_id,
+                ]),
+              ),
           };
         throw new Error('Unexpected repository');
       },
       manager: { query },
       query,
-      transaction: async (isolationOrCallback: any, callback?: any) =>
-        pg.transaction(async (tx) =>
-          (callback ?? isolationOrCallback)({
-            query: async (sql: string, args: unknown[] = []) =>
-              (await tx.query(sql, args)).rows,
-            createQueryBuilder: () =>
-              transactionQueryBuilder(
-                async (sql, parameters) =>
-                  (await tx.query(sql, parameters)).rows,
-              ),
-          }),
+      transaction: (
+        isolationOrCallback:
+          string | ((manager: EntityManager) => Promise<unknown>),
+        callback?: (manager: EntityManager) => Promise<unknown>,
+      ) =>
+        Promise.resolve(
+          pg.transaction((tx) =>
+            Promise.resolve(
+              (typeof isolationOrCallback === 'function'
+                ? isolationOrCallback
+                : callback!)({
+                query: async (sql: string, args: unknown[] = []) => {
+                  const result = await tx.query(sql, args);
+                  // Match PostgresQueryRunner.query: UPDATE/DELETE return [rows, rowCount].
+                  return /^\s*(UPDATE|DELETE)\b/i.test(sql)
+                    ? [result.rows, result.affectedRows ?? result.rows.length]
+                    : result.rows;
+                },
+                createQueryBuilder: () =>
+                  transactionQueryBuilder(
+                    async (sql, parameters) =>
+                      (await tx.query(sql, parameters)).rows,
+                  ),
+              } as unknown as EntityManager),
+            ),
+          ),
         ),
     };
     images = {
@@ -197,7 +233,13 @@ describe('marketplace PostgreSQL behavior', () => {
       assertConfigured: jest.fn(),
       authenticateWebhook: jest.fn(),
     };
-    enqueue = jest.fn(async (message, manager) => {
+    flutterwave = {
+      initialize: jest.fn(),
+      verify: jest.fn(),
+      assertConfigured: jest.fn(),
+      authenticateWebhook: jest.fn(),
+    };
+    enqueue = jest.fn(async (message: unknown, manager: EntityManager) => {
       await manager.query('INSERT INTO test_email_outbox VALUES ($1)', [
         message,
       ]);
@@ -214,6 +256,7 @@ describe('marketplace PostgreSQL behavior', () => {
       { decrypt: () => 'buyer@example.test' } as unknown as EncryptionService,
       new ConfigService({ MARKETPLACE_RESERVATION_MINUTES: '15' }),
       tracking,
+      flutterwave as unknown as FlutterwaveService,
     );
     const module = await Test.createTestingModule({
       imports: [JwtModule.register({ secret: 'orders-test-only' })],
@@ -236,6 +279,8 @@ describe('marketplace PostgreSQL behavior', () => {
     );
     app.useGlobalFilters(new NetResponseFilter());
     await app.init();
+
+    return Promise.resolve();
   });
   afterAll(async () => {
     await app?.close();
@@ -287,11 +332,10 @@ describe('marketplace PostgreSQL behavior', () => {
         },
       ];
     });
-    paystack.initialize.mockImplementation(
-      async (_email, _amount, reference) =>
-        `https://checkout.paystack.com/${reference}`,
+    paystack.initialize.mockImplementation((_email, _amount, reference) =>
+      Promise.resolve(`https://checkout.paystack.com/${reference}`),
     );
-    paystack.verify.mockImplementation(async (reference) => {
+    paystack.verify.mockImplementation(async (reference: string) => {
       const [row] = await query(
         'SELECT total_kobo FROM marketplace_orders WHERE payment_reference=$1',
         [reference],
@@ -303,6 +347,8 @@ describe('marketplace PostgreSQL behavior', () => {
         amount: Number(row.total_kobo),
       };
     });
+
+    return Promise.resolve();
   });
   async function listing(overrides: Partial<CreateListingDto> = {}) {
     const result = await service.createListing(
@@ -310,15 +356,23 @@ describe('marketplace PostgreSQL behavior', () => {
       { ...input, ...overrides },
       [{ buffer: Buffer.from('mock'), size: 4, mimetype: 'image/png' }],
     );
-    return (result.data as any).listing.id as string;
+    return result.data!.listing.id as string;
   }
-  async function checkout(
+  function checkout(
     listingId: string,
     quantity = 2,
     key = randomUUID(),
     extra: Partial<CheckoutDto> = {},
   ) {
-    return service.checkout(buyer, key, { listingId, quantity, ...extra });
+    try {
+      return Promise.resolve(
+        service.checkout(buyer, key, { listingId, quantity, ...extra }),
+      );
+    } catch (error) {
+      return Promise.reject(
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    }
   }
 
   async function admin(manage = true) {
@@ -336,11 +390,11 @@ describe('marketplace PostgreSQL behavior', () => {
   it('serves persisted buyer orders and prevents cross-buyer ID and query access over HTTP', async () => {
     const result = await checkout(await listing());
     const id = result.data!.orderId;
-    const own = await request(app.getHttpServer())
+    const own = await request(app.getHttpServer() as import('node:http').Server)
       .get('/api/orders')
       .auth(token(buyer), { type: 'bearer' })
       .expect(200);
-    expect(own.body.data).toMatchObject({
+    expect(jsonAt(own.body, 'data')).toMatchObject({
       items: [
         {
           id,
@@ -356,27 +410,31 @@ describe('marketplace PostgreSQL behavior', () => {
       ],
       pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
     });
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get(`/api/orders/${id}`)
       .auth(token(other), { type: 'bearer' })
       .expect(404);
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get(`/api/orders?buyerId=${buyer}`)
       .auth(token(other), { type: 'bearer' })
       .expect(400);
-    const empty = await request(app.getHttpServer())
+    const empty = await request(
+      app.getHttpServer() as import('node:http').Server,
+    )
       .get('/api/orders')
       .auth(token(other), { type: 'bearer' })
       .expect(200);
-    expect(empty.body.data).toEqual({
+    expect(jsonAt(empty.body, 'data')).toEqual({
       items: [],
       pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
     });
-    const detail = await request(app.getHttpServer())
+    const detail = await request(
+      app.getHttpServer() as import('node:http').Server,
+    )
       .get(`/api/orders/${id}`)
       .auth(token(buyer), { type: 'bearer' })
       .expect(200);
-    expect(detail.body.data).toMatchObject({
+    expect(jsonAt(detail.body, 'data')).toMatchObject({
       version: 1,
       allowedTransitions: [],
       delivery: null,
@@ -396,8 +454,10 @@ describe('marketplace PostgreSQL behavior', () => {
     expect(JSON.stringify(detail.body)).not.toMatch(
       /encrypted|prescriptionId|payload_hash|authorization_url/,
     );
-    await request(app.getHttpServer()).get('/api/orders').expect(401);
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
+      .get('/api/orders')
+      .expect(401);
+    await request(app.getHttpServer() as import('node:http').Server)
       .get('/api/orders')
       .auth('bad-token', { type: 'bearer' })
       .expect(401);
@@ -428,7 +488,7 @@ describe('marketplace PostgreSQL behavior', () => {
         })
       ).data,
     ).toMatchObject({
-      items: expect.any(Array),
+      items: matchers.any(Array),
       pagination: { total: 2, totalPages: 2 },
     });
     expect(
@@ -456,11 +516,11 @@ describe('marketplace PostgreSQL behavior', () => {
       (await orders.list(buyer, { ...new OrderQueryDto(), q: '%' })).data
         ?.pagination.total,
     ).toBe(0);
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get('/api/orders?limit=101')
       .auth(token(buyer), { type: 'bearer' })
       .expect(400);
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get('/api/orders?status=BOGUS')
       .auth(token(buyer), { type: 'bearer' })
       .expect(400);
@@ -470,18 +530,18 @@ describe('marketplace PostgreSQL behavior', () => {
     const result = await checkout(await listing());
     const id = result.data!.orderId,
       url = `/admin/api/orders/${id}`;
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get(url)
       .auth(token(buyer), { type: 'bearer' })
       .expect(403);
     await admin(false);
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .patch(`${url}/fulfillment`)
       .auth(token(other), { type: 'bearer' })
       .send({ status: 'PROCESSING', expectedVersion: 1, note: 'Processing' })
       .expect(403);
     await query("INSERT INTO role_permissions VALUES (3,'order.manage')");
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .patch(`${url}/fulfillment`)
       .auth(token(other), { type: 'bearer' })
       .send({ status: 'PROCESSING', expectedVersion: 1, note: 'Processing' })
@@ -497,14 +557,18 @@ describe('marketplace PostgreSQL behavior', () => {
       (await orders.detail(other, id, true)).data?.allowedTransitions,
     ).toEqual([]);
     await query("INSERT INTO role_permissions VALUES (3,'order.manage')");
-    const initial = await request(app.getHttpServer())
+    const initial = await request(
+      app.getHttpServer() as import('node:http').Server,
+    )
       .get(url)
       .auth(token(other), { type: 'bearer' })
       .expect(200);
-    expect(initial.body.data.allowedTransitions).toEqual(['PROCESSING']);
-    let version = initial.body.data.version;
+    expect(jsonAt(initial.body, 'data', 'allowedTransitions')).toEqual([
+      'PROCESSING',
+    ]);
+    let version = jsonAt(initial.body, 'data', 'version');
     const patch = (body: object) =>
-      request(app.getHttpServer())
+      request(app.getHttpServer() as import('node:http').Server)
         .patch(`${url}/fulfillment`)
         .auth(token(other), { type: 'bearer' })
         .send(body);
@@ -535,15 +599,18 @@ describe('marketplace PostgreSQL behavior', () => {
       expectedVersion: version,
       note: ' Preparing your order. ',
     }).expect(200);
-    expect(processing.body.data.timeline.at(-1).message).toBe(
-      'Preparing your order.',
-    );
+    expect(
+      jsonAt(
+        jsonArrayAt(processing.body, 'data', 'timeline').at(-1),
+        'message',
+      ),
+    ).toBe('Preparing your order.');
     await patch({
       status: 'PROCESSING',
       expectedVersion: version,
       note: 'Duplicate',
     }).expect(409);
-    version = processing.body.data.version;
+    version = jsonAt(processing.body, 'data', 'version');
     const shipped = await patch({
       status: 'SHIPPED',
       expectedVersion: version,
@@ -551,25 +618,25 @@ describe('marketplace PostgreSQL behavior', () => {
       carrier: 'Actual carrier',
       trackingNumber: 'TRACK-1',
     }).expect(200);
-    expect(shipped.body.data.delivery).toMatchObject({
+    expect(jsonAt(shipped.body, 'data', 'delivery')).toMatchObject({
       carrier: 'Actual carrier',
       trackingNumber: 'TRACK-1',
       deliveredAt: null,
     });
     const delivered = await patch({
       status: 'DELIVERED',
-      expectedVersion: shipped.body.data.version,
+      expectedVersion: jsonAt(shipped.body, 'data', 'version'),
       note: 'Delivered.',
     }).expect(200);
-    expect(delivered.body.data).toMatchObject({
+    expect(jsonAt(delivered.body, 'data')).toMatchObject({
       status: 'DELIVERED',
       paymentStatus: 'PAID',
       allowedTransitions: [],
-      delivery: { deliveredAt: expect.any(String) },
+      delivery: { deliveredAt: matchers.any(String) },
     });
     await patch({
       status: 'PROCESSING',
-      expectedVersion: delivered.body.data.version,
+      expectedVersion: jsonAt(delivered.body, 'data', 'version'),
       note: 'Backward',
     }).expect(409);
     expect(await query('SELECT * FROM test_email_outbox')).toHaveLength(3);
@@ -587,10 +654,41 @@ describe('marketplace PostgreSQL behavior', () => {
     await query(
       "DELETE FROM role_permissions WHERE role_id=3 AND permission='order.read'",
     );
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get(url)
       .auth(token(other), { type: 'bearer' })
       .expect(403);
+  });
+
+  it('expires a reservation with its actual order ID and creates the cancellation event once', async () => {
+    const data = (await checkout(await listing())).data!;
+    await query(
+      "UPDATE marketplace_orders SET expires_at=now()-interval '1 minute' WHERE id=$1",
+      [data.orderId],
+    );
+    paystack.verify.mockRejectedValue(new Error('provider unavailable'));
+    await service.maintenance();
+    await service.maintenance();
+    expect(
+      await query(
+        'SELECT reservation_state,payment_status,order_status FROM marketplace_orders WHERE id=$1',
+        [data.orderId],
+      ),
+    ).toEqual([
+      {
+        reservation_state: 'RELEASED',
+        payment_status: 'EXPIRED',
+        order_status: 'CANCELLED',
+      },
+    ]);
+    expect(
+      await query(
+        "SELECT order_id FROM purchase_order_events WHERE event_key='reservation-released'",
+      ),
+    ).toEqual([{ order_id: data.orderId }]);
+    expect((await query('SELECT quantity FROM inventory'))[0].quantity).toBe(
+      10,
+    );
   });
 
   it('deduplicates payment timeline and email and blocks fulfillment of late paid released stock', async () => {
@@ -602,7 +700,7 @@ describe('marketplace PostgreSQL behavior', () => {
     expect((await query('SELECT quantity FROM inventory'))[0].quantity).toBe(8);
     await admin();
     const b = await checkout(
-      (await query('SELECT id FROM marketplace_listings'))[0].id,
+      String((await query('SELECT id FROM marketplace_listings'))[0].id),
     );
     await query(
       "UPDATE marketplace_orders SET expires_at=now()-interval '1 minute' WHERE id=$1",
@@ -691,12 +789,12 @@ describe('marketplace PostgreSQL behavior', () => {
     const result = await checkout(await listing());
     await admin();
     await query("UPDATE roles SET name='FACILITY_ADMIN' WHERE id=3");
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get(`/admin/api/orders/${result.data!.orderId}`)
       .auth(token(other), { type: 'bearer' })
       .expect(403);
     await query("UPDATE roles SET name='ADMIN' WHERE id=3");
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get(`/admin/api/orders/${randomUUID()}`)
       .auth(token(other), { type: 'bearer' })
       .expect(404);
@@ -729,12 +827,12 @@ describe('marketplace PostgreSQL behavior', () => {
     expect(failed.reason).toMatchObject({ status: 409 });
     expect((await orders.detail(other, detail.id, true)).data).toMatchObject({
       version: detail.version + 1,
-      timeline: expect.arrayContaining([
+      timeline: matchers.arrayContaining([
         {
-          id: expect.any(String),
+          id: matchers.any(String),
           status: 'PROCESSING',
           message: 'Preparing.',
-          occurredAt: expect.any(String),
+          occurredAt: matchers.any(String),
         },
       ]),
     });
@@ -812,8 +910,8 @@ describe('marketplace PostgreSQL behavior', () => {
   });
   it('retains 10 boxes from intake through listing at a price per box and refresh', async () => {
     const batchId = randomUUID();
-    const inventoryRepo: any = {
-      findOne: async ({ where }: any) => {
+    const inventoryRepo = {
+      findOne: async ({ where }: { where: { id: string } }) => {
         const [row] = await query('SELECT * FROM inventory WHERE id=$1', [
           where.id,
         ]);
@@ -826,91 +924,98 @@ describe('marketplace PostgreSQL behavior', () => {
           : null;
       },
       manager: {
-        transaction: async (cb: any) =>
-          pg.transaction(async (tx) => {
-            const run = async (sql: string, args: any[] = []) =>
-              (await tx.query(sql, args)).rows;
-            const manager: any = {
-              getRepository: (entity: any): any => {
-                if (entity === Hospital)
-                  return {
-                    findOne: async () =>
-                      (
+        transaction: (cb: (manager: EntityManager) => Promise<unknown>) =>
+          Promise.resolve(
+            pg.transaction((tx) => {
+              const run = async (sql: string, args: unknown[] = []) =>
+                (await tx.query(sql, args)).rows;
+              const manager = {
+                getRepository: (entity: unknown) => {
+                  if (entity === Hospital)
+                    return {
+                      findOne: async () =>
+                        (
+                          await run(
+                            'SELECT * FROM hospitals WHERE id=$1 FOR UPDATE',
+                            [facility],
+                          )
+                        )[0],
+                    };
+                  if (entity === Medicine)
+                    return {
+                      createQueryBuilder: () => {
+                        const clauses: string[] = [];
+                        const params: Record<string, unknown> = {};
+                        const qb: CatalogueQueryDouble = {
+                          where: (sql: string, p: Record<string, unknown>) => {
+                            clauses.push(sql);
+                            Object.assign(params, p);
+                            return qb;
+                          },
+                          andWhere: (
+                            sql: string,
+                            p: Record<string, unknown>,
+                          ) => {
+                            clauses.push(sql);
+                            Object.assign(params, p);
+                            return qb;
+                          },
+                          setLock: () => qb,
+                          getOne: async () =>
+                            (
+                              await run(
+                                'SELECT m.* FROM medicines m WHERE ' +
+                                  clauses
+                                    .join(' AND ')
+                                    .replaceAll(':medicineId', '$1')
+                                    .replaceAll(':facilityId', '$2'),
+                                [params.medicineId, params.facilityId],
+                              )
+                            )[0],
+                        };
+                        return qb;
+                      },
+                    };
+                  if (entity === AuditLog)
+                    return { save: () => Promise.resolve({}) };
+                  if (entity === Inventory)
+                    return {
+                      create: (row: Inventory) => row,
+                      exists: () => Promise.resolve(false),
+                      save: async (row: Inventory) => {
                         await run(
-                          'SELECT * FROM hospitals WHERE id=$1 FOR UPDATE',
-                          [facility],
-                        )
-                      )[0],
-                  };
-                if (entity === Medicine)
-                  return {
-                    createQueryBuilder: () => {
-                      const clauses: string[] = [];
-                      const params: any = {};
-                      const qb: any = {
-                        where: (sql: string, p: any) => {
-                          clauses.push(sql);
-                          Object.assign(params, p);
-                          return qb;
-                        },
-                        andWhere: (sql: string, p: any) => {
-                          clauses.push(sql);
-                          Object.assign(params, p);
-                          return qb;
-                        },
-                        setLock: () => qb,
-                        getOne: async () =>
-                          (
-                            await run(
-                              'SELECT m.* FROM medicines m WHERE ' +
-                                clauses
-                                  .join(' AND ')
-                                  .replaceAll(':medicineId', '$1')
-                                  .replaceAll(':facilityId', '$2'),
-                              [params.medicineId, params.facilityId],
-                            )
-                          )[0],
-                      };
-                      return qb;
-                    },
-                  };
-                if (entity === AuditLog) return { save: async () => ({}) };
-                if (entity === Inventory)
-                  return {
-                    create: (row: any) => row,
-                    exists: async () => false,
-                    save: async (row: any) => {
-                      await run(
-                        'INSERT INTO inventory(id,hospital_id,medicine_id,batch_number,expiry_date,quantity,selling_unit,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-                        [
-                          batchId,
-                          row.hospital.id,
-                          row.medicine.id,
-                          row.batch_number,
-                          row.expiry_date,
-                          row.quantity,
-                          row.selling_unit,
-                          row.status,
-                        ],
-                      );
-                      return { ...row, id: batchId };
-                    },
-                  };
-                throw new Error('Unexpected entity');
-              },
-            };
-            return cb(manager);
-          }),
+                          'INSERT INTO inventory(id,hospital_id,medicine_id,batch_number,expiry_date,quantity,selling_unit,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+                          [
+                            batchId,
+                            row.hospital.id,
+                            row.medicine.id,
+                            row.batch_number,
+                            row.expiry_date,
+                            row.quantity,
+                            row.selling_unit,
+                            row.status,
+                          ],
+                        );
+                        return { ...row, id: batchId };
+                      },
+                    };
+                  throw new Error('Unexpected entity');
+                },
+              };
+              return Promise.resolve(cb(manager as unknown as EntityManager));
+            }),
+          ),
       },
     };
     const intake = new InventoryService(
-      inventoryRepo as Repository<Inventory>,
+      inventoryRepo as unknown as Repository<Inventory>,
       {} as Repository<Hospital>,
       {} as Repository<Medicine>,
       {
-        assertManage: async () => ({
-          hospital: { id: facility, name: 'Seller pharmacy' },
-        }),
+        assertManage: () =>
+          Promise.resolve({
+            hospital: { id: facility, name: 'Seller pharmacy' },
+          }),
       } as unknown as StockAccessService,
     );
     const added = await intake.create(
@@ -952,6 +1057,8 @@ describe('marketplace PostgreSQL behavior', () => {
         [listingId],
       ),
     ).toEqual([{ unit: 'box', quantity: 10, price_kobo: 250000 }]);
+
+    return Promise.resolve();
   });
   it('soft-deletes catalogue medicines atomically, hides stock across refreshes and preserves payment/history traces', async () => {
     await query('UPDATE medicines SET catalog_facility_id=$1 WHERE id=$2', [
@@ -960,60 +1067,78 @@ describe('marketplace PostgreSQL behavior', () => {
     ]);
     const listingId = await listing();
     const paid = await checkout(listingId, 2);
-    const paidReference = (paid.data as any).reference;
+    const paidReference = paid.data!.reference;
     // Settle one order before deletion; keep another reservation unpaid.
     await service.reconcile(paidReference);
     const pending = await checkout(listingId, 1, randomUUID());
-    const pendingReference = (pending.data as any).reference;
+    const pendingReference = pending.data!.reference;
     await query(
       "INSERT INTO transfer_requests(id,medicine_id,inventory_id,status) VALUES ($1,$2,$3,'PENDING_APPROVAL')",
       [randomUUID(), medicine, stock],
     );
     let failAudit = true;
-    const db: any = {
-      transaction: async (cb: any) =>
-        pg.transaction(async (tx) => {
-          const run = async (sql: string, args: any[] = []) =>
-            (await tx.query(sql, args)).rows;
-          return cb({
-            query: run,
-            createQueryBuilder: () => transactionQueryBuilder(run),
-            getRepository: (entity: any): any => {
-              if (entity === Medicine)
-                return {
-                  findOne: async ({ where }: any) =>
-                    (
-                      await run(
-                        'SELECT * FROM medicines WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',
-                        [where.id],
-                      )
-                    )[0],
-                  softDelete: async ({ id }: any) =>
-                    run('UPDATE medicines SET deleted_at=now() WHERE id=$1', [
-                      id,
-                    ]),
-                };
-              if (entity === Inventory) return { exists: async () => false };
-              if (entity === AuditLog)
-                return {
-                  save: async (row: any) => {
-                    if (failAudit) throw new Error('Audit unavailable');
-                    return run(
-                      'INSERT INTO audit_logs(action,description) VALUES ($1,$2)',
-                      [row.action, row.description],
-                    );
-                  },
-                };
-              throw new Error('Unexpected entity');
-            },
-          });
-        }),
+    const db = {
+      transaction: (cb: (manager: EntityManager) => Promise<unknown>) =>
+        Promise.resolve(
+          pg.transaction((tx) => {
+            const run = async (sql: string, args: unknown[] = []) =>
+              (await tx.query(sql, args)).rows;
+            return Promise.resolve(
+              cb({
+                query: run,
+                createQueryBuilder: () => transactionQueryBuilder(run),
+                getRepository: (entity: unknown) => {
+                  if (entity === Medicine)
+                    return {
+                      findOne: async ({ where }: { where: { id: string } }) =>
+                        (
+                          await run(
+                            'SELECT * FROM medicines WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',
+                            [where.id],
+                          )
+                        )[0],
+                      softDelete: ({ id }: { id: string }) =>
+                        Promise.resolve(
+                          run(
+                            'UPDATE medicines SET deleted_at=now() WHERE id=$1',
+                            [id],
+                          ),
+                        ),
+                    };
+                  if (entity === Inventory)
+                    return { exists: () => Promise.resolve(false) };
+                  if (entity === AuditLog)
+                    return {
+                      save: (row: Pick<AuditLog, 'action' | 'description'>) => {
+                        try {
+                          if (failAudit) throw new Error('Audit unavailable');
+                          return Promise.resolve(
+                            run(
+                              'INSERT INTO audit_logs(action,description) VALUES ($1,$2)',
+                              [row.action, row.description],
+                            ),
+                          );
+                        } catch (error) {
+                          return Promise.reject(
+                            error instanceof Error
+                              ? error
+                              : new Error(String(error)),
+                          );
+                        }
+                      },
+                    };
+                  throw new Error('Unexpected entity');
+                },
+              } as unknown as EntityManager),
+            );
+          }),
+        ),
     };
     const catalogue = new MedicineService(
       {} as Repository<Medicine>,
-      db as DataSource,
+      db as unknown as DataSource,
       {
-        catalogueActor: async () => ({ facilityId: facility }),
+        catalogueActor: () => Promise.resolve({ facilityId: facility }),
       } as unknown as StockAccessService,
     );
     await expect(catalogue.remove(medicine, seller, 'test-ip')).rejects.toThrow(
@@ -1060,26 +1185,33 @@ describe('marketplace PostgreSQL behavior', () => {
       (await service.browse(buyer, new ListingQueryDto())).data,
     ).toMatchObject({ total: 0, items: [] });
     // A fresh service/session reads persisted state, rather than cached flags.
-    const readDb: any = {
-      getRepository: (entity: any): any => {
+    const readDb = {
+      getRepository: (entity: unknown) => {
         if (entity === User)
           return {
-            findOne: async () => ({
-              id: seller,
-              active: true,
-              role: { id: 1, name: 'PHARMACIST' },
-              verification_status: 'VERIFIED',
-              hospital: { id: facility, status: 'ACTIVE' },
-            }),
+            findOne: () =>
+              Promise.resolve({
+                id: seller,
+                active: true,
+                role: { id: 1, name: 'PHARMACIST' },
+                verification_status: 'VERIFIED',
+                hospital: { id: facility, status: 'ACTIVE' },
+              }),
           };
         if (entity === VerificationApplication)
-          return { findOne: async () => ({ status: 'VERIFIED' }) };
-        if (entity === RolePermission) return { findBy: async () => [] };
+          return { findOne: () => Promise.resolve({ status: 'VERIFIED' }) };
+        if (entity === RolePermission)
+          return { findBy: () => Promise.resolve([]) };
         throw new Error('Unexpected repository');
       },
-      transaction: async (_level: any, cb: any) => cb({ query }),
+      transaction: (
+        _level: string,
+        cb: (manager: { query: typeof query }) => Promise<unknown>,
+      ) => Promise.resolve(cb({ query })),
     };
-    const refreshed = new OperationalReadsService(readDb);
+    const refreshed = new OperationalReadsService(
+      readDb as unknown as DataSource,
+    );
     const q = { page: 1, limit: 100, withinDays: 60 };
     expect((await refreshed.list('inventory', seller, q)).data).toMatchObject({
       total: 0,
@@ -1090,7 +1222,11 @@ describe('marketplace PostgreSQL behavior', () => {
       includeDeletedMedicines: true,
     });
     expect(history.data?.items[0]).toMatchObject({
-      medicine: { id: medicine, active: false, deleted_at: expect.any(String) },
+      medicine: {
+        id: medicine,
+        active: false,
+        deleted_at: matchers.any(String),
+      },
       medicine_deleted: true,
       medicine_active: false,
       qty: 8,
@@ -1141,18 +1277,20 @@ describe('marketplace PostgreSQL behavior', () => {
     ).toBe(8);
     expect(await query('SELECT * FROM marketplace_orders')).toHaveLength(2);
     expect(await query('SELECT * FROM transfer_requests')).toHaveLength(1);
-    const audit = JSON.parse(
-      (
-        await query(
-          "SELECT description FROM audit_logs WHERE action='MEDICINE_REMOVED'",
-        )
-      )[0].description,
+    const audit: unknown = JSON.parse(
+      String(
+        (
+          await query(
+            "SELECT description FROM audit_logs WHERE action='MEDICINE_REMOVED'",
+          )
+        )[0].description,
+      ),
     );
     expect(audit).toMatchObject({
       medicineId: medicine,
       physicalStockUnchanged: true,
       suspendedListingIds: [listingId],
-      releasedReservationIds: expect.any(Array),
+      releasedReservationIds: matchers.any(Array),
     });
     // Database guards also reject scanner/alternate writes and transfer approval.
     await expect(
@@ -1171,6 +1309,8 @@ describe('marketplace PostgreSQL behavior', () => {
         [randomUUID(), facility, medicine],
       ),
     ).rejects.toMatchObject({ constraint: 'medicine_active_required' });
+
+    return Promise.resolve();
   });
   it('rejects unauthorized seller, wrong facility, unreviewed units and unavailable batches before uploading', async () => {
     await expect(service.createListing(buyer, input, [])).rejects.toMatchObject(
@@ -1257,7 +1397,7 @@ describe('marketplace PostgreSQL behavior', () => {
       await expect(listing()).rejects.toMatchObject({
         status: 422,
         response: {
-          message: expect.stringContaining('authorized catalogue manager'),
+          message: matchers.stringContaining('authorized catalogue manager'),
         },
       });
       expect(images.upload).not.toHaveBeenCalled();
@@ -1343,8 +1483,8 @@ describe('marketplace PostgreSQL behavior', () => {
     expect(paystack.initialize).toHaveBeenCalledWith(
       'buyer@example.test',
       37035,
-      expect.any(String),
-      expect.stringMatching(/^OB-/),
+      matchers.any(String),
+      matchers.stringMatching(/^OB-/),
     );
   });
   it.each(['Approved', 'Cleared'])(
@@ -1383,13 +1523,12 @@ describe('marketplace PostgreSQL behavior', () => {
     expect(order.payment_status).toBe('INITIALIZATION_UNKNOWN');
     await checkout(id, 2, key);
     expect(await query('SELECT id FROM marketplace_orders')).toHaveLength(1);
-    expect(paystack.initialize.mock.calls[0][2]).toBe(
-      paystack.initialize.mock.calls[1][2],
-    );
+    const initializationCalls = paystack.initialize.mock.calls as unknown[][];
+    expect(initializationCalls[0][2]).toBe(initializationCalls[1][2]);
   });
   it('consumes stock once across webhook and invoice races and protects invoice access', async () => {
     const result = await checkout(await listing());
-    const data = result.data as any;
+    const data = result.data!;
     await expect(service.invoice(data.invoiceReference)).rejects.toMatchObject({
       status: 403,
     });
@@ -1413,7 +1552,7 @@ describe('marketplace PostgreSQL behavior', () => {
     'rejects mismatched payment %s without consuming stock',
     async (field) => {
       const result = await checkout(await listing());
-      const data = result.data as any;
+      const data = result.data!;
       paystack.verify.mockResolvedValue({
         status: 'success',
         amount: 250050,
@@ -1431,7 +1570,7 @@ describe('marketplace PostgreSQL behavior', () => {
   );
   it('prevents late payment from consuming expired stock', async () => {
     const id = await listing();
-    const first = (await checkout(id, 10)).data as any;
+    const first = (await checkout(id, 10)).data!;
     await query(
       "UPDATE marketplace_orders SET expires_at=now()-interval '1 minute'",
     );
@@ -1450,7 +1589,7 @@ describe('marketplace PostgreSQL behavior', () => {
     );
   });
   it('does not consume quarantined stock after payment', async () => {
-    const data = (await checkout(await listing())).data as any;
+    const data = (await checkout(await listing())).data!;
     await query("UPDATE inventory SET status='QUARANTINED' WHERE id=$1", [
       stock,
     ]);
@@ -1489,7 +1628,7 @@ describe('marketplace PostgreSQL behavior', () => {
   });
 
   it('releases verified failed payments and exposes the stored failure in invoice reads', async () => {
-    const data = (await checkout(await listing(), 10)).data as any;
+    const data = (await checkout(await listing(), 10)).data!;
     paystack.verify.mockResolvedValue({
       status: 'failed',
       amount: 1250250,
@@ -1510,8 +1649,85 @@ describe('marketplace PostgreSQL behavior', () => {
     });
   });
 
+  it('routes Flutterwave checkout, invoice and duplicate webhooks through verified payment', async () => {
+    flutterwave.initialize.mockResolvedValue(
+      'https://checkout.flutterwave.com/v3/hosted/pay/test',
+    );
+    const id = await listing();
+    const key = randomUUID();
+    const data = (
+      await checkout(id, 2, key, { paymentProvider: 'FLUTTERWAVE' })
+    ).data!;
+    expect(data.paymentProvider).toBe('FLUTTERWAVE');
+    expect(paystack.initialize).not.toHaveBeenCalled();
+    expect(flutterwave.initialize).toHaveBeenCalledWith(
+      'buyer@example.test',
+      250050,
+      data.reference,
+      data.invoiceReference,
+    );
+    await expect(checkout(id, 2, key)).rejects.toMatchObject({ status: 409 });
+    flutterwave.verify.mockResolvedValue({
+      status: 'success',
+      amount: 250050,
+      currency: 'NGN',
+      reference: data.reference,
+    });
+    await service.webhook(Buffer.from('{}'), 'mock', {
+      event: 'charge.success',
+      data: { reference: data.reference },
+    });
+    expect(flutterwave.verify).not.toHaveBeenCalled();
+    const event = {
+      event: 'charge.completed',
+      data: { tx_ref: data.reference },
+    };
+    await service.flutterwaveWebhook('mock', event);
+    await service.flutterwaveWebhook('mock', event);
+    expect(
+      (
+        (await query('SELECT quantity FROM inventory')) as {
+          quantity: number;
+        }[]
+      )[0].quantity,
+    ).toBe(8);
+    expect(await service.invoice(data.invoiceReference, buyer)).toMatchObject({
+      status: 'PAID',
+      paymentProvider: 'FLUTTERWAVE',
+      paystackUrl: null,
+      authorizationUrl: null,
+    });
+  });
+
+  it('rejects Flutterwave amount mismatches and retains stock', async () => {
+    flutterwave.initialize.mockResolvedValue(
+      'https://checkout.flutterwave.com/v3/hosted/pay/test',
+    );
+    const data = (
+      await checkout(await listing(), 2, randomUUID(), {
+        paymentProvider: 'FLUTTERWAVE',
+      })
+    ).data!;
+    flutterwave.verify.mockResolvedValue({
+      status: 'success',
+      amount: 1,
+      currency: 'NGN',
+      reference: data.reference,
+    });
+    await expect(service.reconcile(data.reference)).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(
+      (
+        (await query('SELECT quantity FROM inventory')) as {
+          quantity: number;
+        }[]
+      )[0].quantity,
+    ).toBe(10);
+  });
+
   it('replays webhook deliveries idempotently', async () => {
-    const data = (await checkout(await listing())).data as any;
+    const data = (await checkout(await listing())).data!;
     const event = {
       event: 'charge.success',
       data: { reference: data.reference },

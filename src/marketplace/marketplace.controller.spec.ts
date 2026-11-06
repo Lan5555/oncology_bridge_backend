@@ -1,3 +1,5 @@
+import { matchers } from '../../test/matchers';
+import { jsonAt } from '../../test/json-response';
 import { Test } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
@@ -10,7 +12,10 @@ describe('marketplace HTTP contract', () => {
   let app: INestApplication;
   const service = {
     browse: jest.fn(),
-    createListing: jest.fn(),
+    createListing: jest.fn<
+      Promise<unknown>,
+      [string, unknown, { buffer: Buffer }[]]
+    >(),
     checkout: jest.fn(),
   };
   const inventoryItemId = '00000000-0000-4000-8000-000000000001';
@@ -31,8 +36,12 @@ describe('marketplace HTTP contract', () => {
     })
       .overrideGuard(AuthGuard)
       .useValue({
-        canActivate: (context) => {
-          context.switchToHttp().getRequest().user = { id: 'buyer' };
+        canActivate: (context: import('@nestjs/common').ExecutionContext) => {
+          context
+            .switchToHttp()
+            .getRequest<{ user: Record<string, unknown> }>().user = {
+            id: 'buyer',
+          };
           return true;
         },
       })
@@ -60,9 +69,9 @@ describe('marketplace HTTP contract', () => {
       message: 'Listing submitted.',
       data: { listing: { id: inventoryItemId, status: 'PUBLISHED' } },
     });
-    const submission = request(app.getHttpServer()).post(
-      '/api/marketplace/listings',
-    );
+    const submission = request(
+      app.getHttpServer() as import('node:http').Server,
+    ).post('/api/marketplace/listings');
     for (const [key, value] of Object.entries(fields))
       submission.field(key, value);
     await submission
@@ -77,30 +86,30 @@ describe('marketplace HTTP contract', () => {
       { facilityId: inventoryItemId },
       { prescriptionRequired: '1' },
     ]) {
-      const submission = request(app.getHttpServer()).post(
-        '/api/marketplace/listings',
-      );
+      const submission = request(
+        app.getHttpServer() as import('node:http').Server,
+      ).post('/api/marketplace/listings');
       for (const [key, value] of Object.entries({ ...fields, ...changes }))
-        submission.field(key, value);
+        submission.field(key, String(value));
       const result = await submission
         .attach('images', Buffer.from('photo'), 'photo.png')
         .expect(400);
-      expect(result.body.success).toBe(false);
+      expect(jsonAt(result.body, 'success')).toBe(false);
     }
     expect(service.createListing).not.toHaveBeenCalled();
   });
   it('rejects more than five files and files larger than 5 MiB at the HTTP boundary', async () => {
-    const tooMany = request(app.getHttpServer()).post(
-      '/api/marketplace/listings',
-    );
+    const tooMany = request(
+      app.getHttpServer() as import('node:http').Server,
+    ).post('/api/marketplace/listings');
     for (const [key, value] of Object.entries(fields))
       tooMany.field(key, value);
     for (let index = 0; index < 6; index++)
       tooMany.attach('images', Buffer.from('photo'), `${index}.png`);
     await tooMany.expect(400);
-    const oversized = request(app.getHttpServer()).post(
-      '/api/marketplace/listings',
-    );
+    const oversized = request(
+      app.getHttpServer() as import('node:http').Server,
+    ).post('/api/marketplace/listings');
     for (const [key, value] of Object.entries(fields))
       oversized.field(key, value);
     await oversized
@@ -115,7 +124,7 @@ describe('marketplace HTTP contract', () => {
       { listingId: inventoryItemId, quantity: '2' },
       { listingId: inventoryItemId, quantity: 1, totalNaira: 1 },
     ]) {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as import('node:http').Server)
         .post('/api/marketplace/checkout')
         .send(body)
         .expect(400);
@@ -123,10 +132,10 @@ describe('marketplace HTTP contract', () => {
     expect(service.checkout).not.toHaveBeenCalled();
   });
   it('enforces pagination bounds and converts valid query parameters', async () => {
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get('/api/marketplace/listings?limit=101')
       .expect(400);
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get('/api/marketplace/listings?page=-1')
       .expect(400);
     service.browse.mockResolvedValue({
@@ -134,14 +143,14 @@ describe('marketplace HTTP contract', () => {
       message: '',
       data: { items: [], total: 0, page: 2, limit: 12 },
     });
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as import('node:http').Server)
       .get(
         '/api/marketplace/listings?page=2&limit=12&sort=price_asc&inStock=false',
       )
       .expect(200);
     expect(service.browse).toHaveBeenCalledWith(
       'buyer',
-      expect.objectContaining({
+      matchers.objectContaining({
         page: 2,
         limit: 12,
         sort: 'price_asc',

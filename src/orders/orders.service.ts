@@ -272,8 +272,10 @@ export class OrdersService {
       if (dto.status === 'DELIVERED')
         delivery.deliveredAt = new Date().toISOString();
       const [updated] = await manager.query<PurchaseRow[]>(
-        `UPDATE marketplace_orders SET order_status=$2,fulfillment_state=$2,
-        version=version+1,updated_at=now(),delivery=$3 WHERE id=$1 RETURNING *`,
+        `WITH fulfilled AS (
+        UPDATE marketplace_orders SET order_status=$2,fulfillment_state=$2,
+        version=version+1,updated_at=now(),delivery=$3 WHERE id=$1 RETURNING *
+        ) SELECT * FROM fulfilled`,
         [id, dto.status, Object.keys(delivery).length ? delivery : null],
       );
       await this.tracking.event(

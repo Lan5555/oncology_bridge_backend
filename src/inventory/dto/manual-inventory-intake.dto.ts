@@ -17,7 +17,9 @@ export class ManualInventoryIntakeDto {
   @IsUUID() medicineId!: string;
   @IsOptional() @IsUUID() facilityId?: string;
   @IsOptional() @IsUUID() hospitalId?: string;
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @IsNotEmpty()
   @MaxLength(200)

@@ -104,8 +104,10 @@ describe('professional account reclassification', () => {
       };
     if (entity === UserSession)
       return {
-        update: async () =>
-          sql.query("UPDATE sessions SET token='' WHERE id='target'"),
+        update: () =>
+          Promise.resolve(
+            sql.query("UPDATE sessions SET token='' WHERE id='target'"),
+          ),
       };
     if (entity === AuditLog)
       return {
@@ -143,7 +145,7 @@ describe('professional account reclassification', () => {
         pg.transaction((tx) =>
           work({
             getRepository: (entity: unknown) => repository(tx, entity),
-          } as EntityManager),
+          } as unknown as EntityManager),
         ),
     } as unknown as DataSource;
     service = new UsersService(
@@ -163,7 +165,7 @@ describe('professional account reclassification', () => {
       {} as RegistryMetadataService,
     );
   });
-  afterAll(async () => pg.close());
+  afterAll(() => Promise.resolve(pg.close()));
   beforeEach(async () => {
     failAudit = false;
     await pg.exec('TRUNCATE people,sessions,audits,evidence');
@@ -427,7 +429,7 @@ describe('professional account reclassification', () => {
           license_number: 'OLD123',
           registry: 'MDCN',
         },
-        { ...original, license_number: null },
+        Object.assign(new User(), original, { license_number: null }),
         db,
       ),
     ).rejects.toMatchObject({ status: 409 });

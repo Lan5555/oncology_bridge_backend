@@ -1,4 +1,5 @@
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { matchers } from '../../test/matchers';
+import { DataSource, Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { RegistryMetadataService } from './registry-metadata.service';
 import { IntegrationConfiguration } from '../admin/entities/integration-configuration.entity';
@@ -53,36 +54,42 @@ describe('registry metadata on existing review records', () => {
       checked_at: new Date(),
     };
     const users = {
-      findOne: jest.fn(async (options) =>
-        options.where.id === actor.id ? actor : applicant,
+      findOne: jest.fn((options: { where: { id: string } }) =>
+        Promise.resolve(options.where.id === actor.id ? actor : applicant),
       ),
-      findOneBy: jest.fn(async () => applicant),
+      findOneBy: jest.fn(() => Promise.resolve(applicant)),
     };
     const manager = {
       getRepository: (entity: unknown) => {
         if (entity === IntegrationConfiguration)
           return {
-            findOneBy: async () => ({
-              values: { pcn_registry_name: 'Configured pharmacy registry' },
-            }),
+            findOneBy: () =>
+              Promise.resolve({
+                values: { pcn_registry_name: 'Configured pharmacy registry' },
+              }),
           };
         if (entity === User) return users;
         if (entity === RolePermission)
           return {
-            findOneBy: async () => ({ permission: 'facility.users.manage' }),
+            findOneBy: () =>
+              Promise.resolve({ permission: 'facility.users.manage' }),
           };
         if (entity === FacilityMembershipRequest)
-          return { find: async () => [member], findOne: async () => member };
+          return {
+            find: () => Promise.resolve([member]),
+            findOne: () => Promise.resolve(member),
+          };
         if (entity === VerificationApplication)
-          return { findOne: async () => application };
+          return { findOne: () => Promise.resolve(application) };
         if (entity === FacilityLicenseCheck)
           return {
-            findOne: async () => review,
-            save: async (row) => ({
-              ...row,
-              id: 'review',
-              checked_at: review.checked_at,
-            }),
+            findOne: () => Promise.resolve(review),
+            save: (row: Record<string, unknown>) =>
+              Promise.resolve({
+                ...row,
+                id: 'review',
+                checked_at: review.checked_at,
+              }),
           };
         if (entity === AuditLog) return { save: jest.fn() };
         throw new Error('Unexpected repository');
@@ -91,8 +98,8 @@ describe('registry metadata on existing review records', () => {
     const db = {
       manager,
       getRepository: manager.getRepository,
-      transaction: async (callback) =>
-        callback(manager as unknown as EntityManager),
+      transaction: (callback: (value: typeof manager) => Promise<unknown>) =>
+        callback(manager),
     } as unknown as DataSource;
     const metadata = new RegistryMetadataService(db);
     const encryption = {
@@ -109,10 +116,11 @@ describe('registry metadata on existing review records', () => {
     );
     applications = new VerificationApplicationsService(
       {
-        find: async () => [
-          application,
-          { ...application, id: 'legacy', registry: 'UNCONFIGURED' },
-        ],
+        find: () =>
+          Promise.resolve([
+            application,
+            { ...application, id: 'legacy', registry: 'UNCONFIGURED' },
+          ]),
       } as unknown as Repository<VerificationApplication>,
       db,
       encryption,
@@ -154,12 +162,12 @@ describe('registry metadata on existing review records', () => {
   });
   it('adds optional names to central licence application records and preserves unknown codes', async () => {
     expect(await applications.all()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
+      matchers.arrayContaining([
+        matchers.objectContaining({
           registry: 'PCN',
           registry_name: 'Configured pharmacy registry',
         }),
-        expect.objectContaining({
+        matchers.objectContaining({
           registry: 'UNCONFIGURED',
           registry_name: null,
         }),

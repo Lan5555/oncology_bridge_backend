@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 /* eslint-disable @typescript-eslint/no-unsafe-enum-comparison */
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import {
@@ -355,7 +354,7 @@ export class UsersService {
     if (!actor?.active) throw new ForbiddenException('Active account required');
     if (actor.role?.name === 'FACILITY_ADMIN') {
       await this.assertFacilityTeamPermission(actor);
-      return this.findAll({ ...options, facilityId: actor.hospital!.id });
+      return this.findAll({ ...options, facilityId: actor.hospital.id });
     }
     return this.findAll(options);
   }
@@ -427,7 +426,7 @@ export class UsersService {
         throw new ConflictException('Selected facility role is not configured');
       const user = await users.save(
         users.create({
-          hospital: actor.hospital!,
+          hospital: actor.hospital,
           role,
           first_name: dto.first_name.trim(),
           last_name: dto.last_name.trim(),
@@ -459,7 +458,7 @@ export class UsersService {
       });
       await manager.getRepository(FacilityMembershipRequest).save({
         user_id: user.id,
-        facility_id: actor.hospital!.id,
+        facility_id: actor.hospital.id,
         status: 'APPROVED',
         reviewer_id: actor.id,
         reviewed_at: new Date(),
@@ -468,7 +467,7 @@ export class UsersService {
       await manager.getRepository(AuditLog).save({
         user: actor,
         action: 'FACILITY_USER_INVITED',
-        description: `User ${user.id} invited to facility ${actor.hospital!.id}; licence review pending`,
+        description: `User ${user.id} invited to facility ${actor.hospital.id}; licence review pending`,
         ip_address: ip || 'unknown',
         event_key: null,
         object_type: 'user',
@@ -493,7 +492,7 @@ export class UsersService {
               registryNames.get(
                 user.license_registry?.trim().toUpperCase() ?? '',
               ) ?? null,
-            facility_id: actor.hospital!.id,
+            facility_id: actor.hospital.id,
           },
         },
       );

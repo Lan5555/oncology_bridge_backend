@@ -1,12 +1,15 @@
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { NetResponseFilter } from './helpers/net-response.filter';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { rawBody: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
   if (process.env.TRUST_PROXY === '1') {
-    app.getHttpAdapter().getInstance().set('trust proxy', 1);
+    app.set('trust proxy', 1);
   }
   const configuredOrigins = (process.env.CORS_ORIGIN ?? '')
     .split(',')

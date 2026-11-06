@@ -1,5 +1,6 @@
+import { matchers } from '../../test/matchers';
 import { transactionQueryBuilder } from '../../test/typeorm-query-builder';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { MedicineService } from './medicine.service';
 import { Medicine } from './entities/medicine.entity';
 import { StockAccessService } from '../guards/stock-access.service';
@@ -23,25 +24,26 @@ describe('facility catalogue ownership', () => {
       generic_name: 'Old name',
     } as Medicine;
     repo = {
-      findOne: jest.fn(async () => medicine),
-      save: jest.fn(async (row) => row),
+      findOne: jest.fn(() => Promise.resolve(medicine)),
+      save: jest.fn((row: Medicine) => Promise.resolve(row)),
       softDelete: jest.fn(),
-      create: jest.fn((row) => row),
+      create: jest.fn((row: unknown) => row),
     };
     foreignStock = false;
     const manager = {
-      createQueryBuilder: () => transactionQueryBuilder(async () => []),
+      createQueryBuilder: () =>
+        transactionQueryBuilder(() => Promise.resolve([])),
       query: jest.fn().mockResolvedValue([]),
       getRepository: (entity: unknown) =>
         entity === Medicine
           ? repo
           : entity === Inventory
-            ? { exists: async () => foreignStock }
+            ? { exists: () => Promise.resolve(foreignStock) }
             : { save: jest.fn() },
     };
     const db = {
-      transaction: async (callback) =>
-        callback(manager as unknown as EntityManager),
+      transaction: (callback: (value: typeof manager) => Promise<unknown>) =>
+        callback(manager),
     } as unknown as DataSource;
     service = new MedicineService(repo as unknown as Repository<Medicine>, db, {
       catalogueActor: jest.fn().mockResolvedValue(actor),
@@ -61,7 +63,7 @@ describe('facility catalogue ownership', () => {
       'staff',
     );
     expect(repo.create).toHaveBeenCalledWith(
-      expect.objectContaining({ catalog_facility_id: 'facility-a' }),
+      matchers.objectContaining({ catalog_facility_id: 'facility-a' }),
     );
   });
   it.each([null, 'facility-b'])(
@@ -81,7 +83,7 @@ describe('facility catalogue ownership', () => {
   it('allows authorized mutations of the facility own catalogue record', async () => {
     await service.update('drug', { generic_name: 'New name' }, 'staff', 'ip');
     expect(repo.save).toHaveBeenCalledWith(
-      expect.objectContaining({ generic_name: 'New name' }),
+      matchers.objectContaining({ generic_name: 'New name' }),
     );
     await service.remove('drug', 'staff', 'ip');
     expect(repo.softDelete).toHaveBeenCalledWith({ id: 'drug' });

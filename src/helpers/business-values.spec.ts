@@ -114,8 +114,8 @@ describe('explicit business values and missing data', () => {
     Object.assign(prescriptions, {
       manager: {
         ...manager,
-        transaction: async (callback: (value: typeof manager) => unknown) =>
-          callback(manager),
+        transaction: (callback: (value: typeof manager) => unknown) =>
+          Promise.resolve(callback(manager)),
       },
     });
     const events = {
@@ -155,6 +155,8 @@ describe('explicit business values and missing data', () => {
       service.update(row.id, { insurer: 'x'.repeat(121) }, undefined, 'doctor'),
     ).rejects.toThrow('120');
     expect(save).toHaveBeenCalledTimes(writes);
+
+    return Promise.resolve();
   });
 
   it('normalizes a new currency, permits clearing it and does not invent a default', async () => {
@@ -177,8 +179,8 @@ describe('explicit business values and missing data', () => {
       ...repository,
       manager: {
         ...manager,
-        transaction: async (callback: (value: typeof manager) => unknown) =>
-          callback(manager),
+        transaction: (callback: (value: typeof manager) => unknown) =>
+          Promise.resolve(callback(manager)),
       },
     } as unknown as Repository<Setting>);
     expect(await settings.all()).toEqual({});
@@ -198,6 +200,8 @@ describe('explicit business values and missing data', () => {
     expect(await settings.all()).toEqual({ currency: null, threshold: 0 });
     expect(currencyPreference(null)).toBeNull();
     expect(() => currencyPreference(0)).toThrow();
+
+    return Promise.resolve();
   });
 
   it('distinguishes missing numbers from actual recorded zero', () => {

@@ -1,5 +1,6 @@
+import { jsonAt } from '../../test/json-response';
 /* Supertest exposes untyped JSON bodies; assertions below verify their HTTP shapes. */
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
+
 import { PGlite } from '@electric-sql/pglite';
 import { Test } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
@@ -48,9 +49,11 @@ describe('shipment temperature monitoring (PostgreSQL and HTTP)', () => {
   ) => (await pg.query<T>(sql, args)).rows;
   const auth = (n = 14) => `Bearer ${jwt.sign({ id: id(n), mfa: true })}`;
   const get = (path: string, n = 10) =>
-    request(app.getHttpServer()).get(path).set('Authorization', auth(n));
+    request(app.getHttpServer() as import('node:http').Server)
+      .get(path)
+      .set('Authorization', auth(n));
   const post = (path: string, body: object, n = 14) =>
-    request(app.getHttpServer())
+    request(app.getHttpServer() as import('node:http').Server)
       .post(path)
       .set('Authorization', auth(n))
       .send(body);
@@ -75,16 +78,20 @@ describe('shipment temperature monitoring (PostgreSQL and HTTP)', () => {
     const db = {
       manager: { query },
       query,
-      transaction: async (
+      transaction: (
         levelOrCallback: string | ((m: EntityManager) => Promise<unknown>),
         callback?: (m: EntityManager) => Promise<unknown>,
       ) =>
-        pg.transaction(async (tx) =>
-          (typeof levelOrCallback === 'function' ? levelOrCallback : callback!)(
-            {
-              query: async (sql: string, args: unknown[] = []) =>
-                (await tx.query(sql, args)).rows,
-            } as EntityManager,
+        Promise.resolve(
+          pg.transaction((tx) =>
+            Promise.resolve(
+              (typeof levelOrCallback === 'function'
+                ? levelOrCallback
+                : callback!)({
+                query: async (sql: string, args: unknown[] = []) =>
+                  (await tx.query(sql, args)).rows,
+              } as EntityManager),
+            ),
           ),
         ),
       getRepository: (entity: unknown) => {
@@ -196,14 +203,17 @@ describe('shipment temperature monitoring (PostgreSQL and HTTP)', () => {
     );
   });
   const create = async (extra: object = {}) =>
-    (
-      await post('/admin/api/shipments', {
-        ...settings,
-        orderId: id(30),
-        courierId: id(20),
-        ...extra,
-      }).expect(201)
-    ).body.data as { id: string; version: number };
+    jsonAt(
+      (
+        await post('/admin/api/shipments', {
+          ...settings,
+          orderId: id(30),
+          courierId: id(20),
+          ...extra,
+        }).expect(201)
+      ).body,
+      'data',
+    ) as { id: string; version: number };
   const enable = async (shipment: string) => {
     configured = true;
     // Use a deterministic earlier monitoring start via the test clock-independent fixture.
@@ -235,7 +245,7 @@ describe('shipment temperature monitoring (PostgreSQL and HTTP)', () => {
   it('persists pending integration with null live data, no fake history, and an explicit sync failure', async () => {
     const s = await create();
     const detail = await get(`/api/shipments/${s.id}/temperature`).expect(200);
-    expect(detail.body.data).toMatchObject({
+    expect(jsonAt(detail.body, 'data')).toMatchObject({
       orderId: id(30),
       courier: { id: id(20), name: 'Actual courier' },
       monitoringStatus: 'PENDING_INTEGRATION',
@@ -247,7 +257,7 @@ describe('shipment temperature monitoring (PostgreSQL and HTTP)', () => {
     const history = await get(
       `/api/shipments/${s.id}/temperature/history`,
     ).expect(200);
-    expect(history.body.data).toMatchObject({
+    expect(jsonAt(history.body, 'data')).toMatchObject({
       monitoringStatus: 'PENDING_INTEGRATION',
       items: [],
       pagination: { total: 0, totalPages: 0 },
@@ -265,10 +275,20 @@ describe('shipment temperature monitoring (PostgreSQL and HTTP)', () => {
     await get(`/api/shipments/${s.id}/temperature`, 11).expect(200);
     await get(`/api/shipments/${s.id}/temperature`, 12).expect(404);
     expect(
-      (await get('/api/shipments', 12).expect(200)).body.data.pagination.total,
+      jsonAt(
+        (await get('/api/shipments', 12).expect(200)).body,
+        'data',
+        'pagination',
+        'total',
+      ),
     ).toBe(0);
     expect(
-      (await get('/api/shipments', 10).expect(200)).body.data.pagination.total,
+      jsonAt(
+        (await get('/api/shipments', 10).expect(200)).body,
+        'data',
+        'pagination',
+        'total',
+      ),
     ).toBe(1);
     for (const n of [10, 15, 16])
       await post(
@@ -276,7 +296,9 @@ describe('shipment temperature monitoring (PostgreSQL and HTTP)', () => {
         { ...settings, orderId: id(30), courierId: id(20) },
         n,
       ).expect(403);
-    await request(app.getHttpServer()).get('/api/shipments').expect(401);
+    await request(app.getHttpServer() as import('node:http').Server)
+      .get('/api/shipments')
+      .expect(401);
     await get('/api/shipments?buyerId=' + id(10)).expect(400);
   });
   it('links transfer monitoring to the actual courier assignment and participating facilities', async () => {
@@ -284,19 +306,35 @@ describe('shipment temperature monitoring (PostgreSQL and HTTP)', () => {
       ...settings,
       courierAssignmentId: id(50),
     }).expect(201);
-    const s = response.body.data;
+    const s = jsonAt(response.body, 'data');
     expect(s).toMatchObject({
       courierAssignmentId: id(50),
       orderId: null,
       courier: { id: id(20) },
     });
-    await get(`/api/shipments/${s.id}/temperature`, 10).expect(200);
-    await get(`/api/shipments/${s.id}/temperature`, 11).expect(200);
-    await get(`/api/shipments/${s.id}/temperature`, 12).expect(404);
+    await get(
+      `/api/shipments/${String(jsonAt(s, 'id'))}/temperature`,
+      10,
+    ).expect(200);
+    await get(
+      `/api/shipments/${String(jsonAt(s, 'id'))}/temperature`,
+      11,
+    ).expect(200);
+    await get(
+      `/api/shipments/${String(jsonAt(s, 'id'))}/temperature`,
+      12,
+    ).expect(404);
     await query("UPDATE transfer_requests SET status='DELIVERED'");
     expect(
-      (await get(`/api/shipments/${s.id}/temperature`).expect(200)).body.data
-        .monitoringStatus,
+      jsonAt(
+        (
+          await get(
+            `/api/shipments/${String(jsonAt(s, 'id'))}/temperature`,
+          ).expect(200)
+        ).body,
+        'data',
+        'monitoringStatus',
+      ),
     ).toBe('ENDED');
   });
   it('validates reviewed thresholds and source eligibility, and prevents duplicate shipment/device assignments', async () => {
@@ -341,11 +379,13 @@ describe('shipment temperature monitoring (PostgreSQL and HTTP)', () => {
   it('allows versioned corrections while pending but rejects stale edits and edits after readings', async () => {
     const s = await create();
     const update = (expectedVersion: number) =>
-      request(app.getHttpServer())
+      request(app.getHttpServer() as import('node:http').Server)
         .patch(`/admin/api/shipments/${s.id}/monitoring`)
         .set('Authorization', auth())
         .send({ ...settings, expectedVersion });
-    expect((await update(1).expect(200)).body.data.version).toBe(2);
+    expect(jsonAt((await update(1).expect(200)).body, 'data', 'version')).toBe(
+      2,
+    );
     await update(1).expect(409);
     await enable(s.id);
     batch = [reading()];
@@ -374,18 +414,22 @@ describe('shipment temperature monitoring (PostgreSQL and HTTP)', () => {
       latestReading: { celsius: 5 },
       excursionCount: 2,
     });
-    const h = (
-      await get(`/api/shipments/${s.id}/temperature/history?limit=1`).expect(
-        200,
-      )
-    ).body.data;
-    expect(h.pagination).toMatchObject({ total: 3, totalPages: 3 });
-    expect(h.items[0].celsius).toBe(5);
+    const h = jsonAt(
+      (
+        await get(`/api/shipments/${s.id}/temperature/history?limit=1`).expect(
+          200,
+        )
+      ).body,
+      'data',
+    );
+    expect(jsonAt(h, 'pagination')).toMatchObject({ total: 3, totalPages: 3 });
+    expect(jsonAt(h, 'items', 0, 'celsius')).toBe(5);
     expect(await query('SELECT * FROM notifications')).toHaveLength(4);
-    const events = (
-      await get(`/api/shipments/${s.id}/temperature/events`).expect(200)
-    ).body.data;
-    expect(events.pagination.total).toBe(2);
+    const events = jsonAt(
+      (await get(`/api/shipments/${s.id}/temperature/events`).expect(200)).body,
+      'data',
+    );
+    expect(jsonAt(events, 'pagination', 'total')).toBe(2);
     await get(`/api/shipments/${s.id}/temperature/events`, 12).expect(404);
     await expect(
       query('UPDATE shipment_monitors SET min_celsius=1 WHERE id=$1', [s.id]),
