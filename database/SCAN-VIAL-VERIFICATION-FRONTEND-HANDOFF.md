@@ -2,6 +2,10 @@
 
 ## Text to send to the frontend developer
 
+Use `data.validation.status` for the combined result badge: `VALID` or `WARNING`. Label it "Product record check". Display `validation.reason` and every entry in `validation.reasons` (`code`, `message`). `VALID` requires an exact barcode-linked openFDA label, exactly one active Greenbook registration, matching product name and manufacturer across those sources, and no detected packaging mismatch, provider data-quality issue, or expired pack/registration. Product names are compared with openFDA brand names; a generic name alone cannot establish product identity. Text matches normalize Unicode, case and whitespace only; other differences require review. Missing barcode/NAFDAC number, provider failure, ambiguous results and missing identity fields produce warnings. A NAFDAC-only check therefore produces `WARNING` for the combined check even if its registration is found.
+
+The openFDA source is drug labeling data, not a clinical-trial or pack-authentication service. FDA `productNdcs` expose manufacturer/labeler and product codes for review. The Greenbook adapter has no equivalent NDC/GTIN field, so those codes are not equated with NAFDAC registration numbers. `registrationLookup.recordLink` reports `PRODUCT_AND_MANUFACTURER_MATCH` only when the two source identity comparisons match; inspect `crossSourceComparisons` for the evidence. This is a text-based record association, not an authoritative barcode registration or physical-pack authentication. A `VALID` result is not medical clearance or recall clearance.
+
 Update Scan Vial to check Nigerian medicine registration through our backend, alongside the existing US label lookup. Add a field for the NAFDAC registration number printed on the package. A GS1 barcode does not reliably contain this number; do not derive it from the GTIN, lot or serial. Users can check a NAFDAC number even without a barcode.
 
 Use authenticated `POST /api/scans/verify` for JSON requests. Submit `nafdacNumber` with optional `productName`, `manufacturer` and `strength` copied from the packaging. To include a barcode assessment, also send exactly one of `rawBarcode` or `gtin`. For a photo, use `POST /api/scans/verify-image`, multipart field `image` (JPEG/PNG, maximum 10 MB), and the same optional text fields. Remove automatic inventory submission from this screen. These verification endpoints do not create stock or scan-history records.
@@ -67,10 +71,11 @@ Successful assessments retain HTTP 201 and `{ "success": true, "message": "Medic
 | --- | --- |
 | `identifiers` | `{gtin, lot, serial, expiry}`; unavailable values are null |
 | `checkedAt` | Server UTC timestamp after the checks |
+| `validation` | `{status: "VALID" or "WARNING", scope: "PRODUCT_RECORD_CHECK", reason, reasons: [{code, message}]}`; empty reasons on VALID |
 | `authenticity` | `{status: "UNVERIFIED", provider: null, reason}` |
 | `productLookup` | Existing openFDA result with `status`, `source`, `market`, `sourceUrl`, `labelId`, `labelEffectiveTime`, `official` |
 | `productLookup.status` | `FOUND`, `NOT_FOUND`, `UNAVAILABLE`, `AMBIGUOUS`; `NOT_REQUESTED` when no barcode/GTIN is supplied |
-| `productLookup.official` | Null or arrays `brandNames`, `genericNames`, `manufacturers`, `packageNdcs`, `activeIngredients`, `storageAndHandling`, `warnings` |
+| `productLookup.official` | Null or arrays `brandNames`, `genericNames`, `manufacturers`, `productNdcs`, `packageNdcs`, `activeIngredients`, `storageAndHandling`, `warnings` |
 | `comparisons` | Existing US label comparisons for brandName/genericName/manufacturer |
 | `registrationLookup` | Nigerian registration evidence, described below |
 | `expiry` | `{status: "EXPIRED" or "NOT_EXPIRED" or "UNKNOWN", source: "BARCODE", verifiedByManufacturer: false}` |
@@ -90,6 +95,8 @@ Successful assessments retain HTTP 201 and `{ "success": true, "message": "Medic
 | `retrievedAt` | Timestamp our backend received valid results; preserved on cache hits |
 | `completeness` | `NOT_GUARANTEED`; the actor may return a partial snapshot |
 | `barcodeLink` | `NOT_ESTABLISHED`; no authoritative link to the scanned GTIN |
+| `recordLink` | `PRODUCT_AND_MANUFACTURER_MATCH` or `NOT_ESTABLISHED`; source text association only |
+| `crossSourceComparisons` | Greenbook product name/manufacturer against openFDA brand names/manufacturers, with MATCH/MISMATCH/UNAVAILABLE; empty unless both source records exist |
 | `records` | All exact-number matching records; never a silently chosen first result |
 | `comparisons` | Product name/manufacturer/strength comparisons, only when exactly one record is returned with status FOUND; otherwise empty |
 

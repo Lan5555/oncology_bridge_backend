@@ -160,6 +160,113 @@ describe('medicine authenticity evidence', () => {
     expect(result.guidance).toContain('inactive');
     expect(result.authenticity.status).toBe('UNVERIFIED');
   });
+
+  describe('combined record verdict', () => {
+    const record = {
+      productName: 'Example tablets',
+      manufacturer: 'Example Pharma',
+      status: 'Active',
+      registrationExpiresAt: '2099-01-01',
+    };
+    beforeEach(() => {
+      lookup.mockResolvedValue({
+        status: 'FOUND',
+        url: null,
+        label: {
+          id: 'label',
+          openfda: {
+            brand_name: ['Example tablets'],
+            manufacturer_name: ['Example Pharma'],
+            product_ndc: ['12345-678'],
+          },
+        },
+      });
+      registrationLookup.mockResolvedValue({
+        status: 'FOUND',
+        records: [record],
+      });
+    });
+
+    it('accepts matching source records without user-entered names', async () => {
+      const result = await service.verify({ gtin, nafdacNumber: 'A4-1234' });
+      expect(result.validation.status).toBe('VALID');
+      expect(result.validation.reasons).toEqual([]);
+      expect(result.productLookup.official?.productNdcs).toEqual(['12345-678']);
+      expect(result.registrationLookup.recordLink).toBe(
+        'PRODUCT_AND_MANUFACTURER_MATCH',
+      );
+      expect(result.authenticity.status).toBe('UNVERIFIED');
+    });
+
+    it.each([
+      [{ productName: 'Other product' }, 'CROSS_SOURCE_PRODUCT_MISMATCH'],
+      [
+        { manufacturer: 'Other manufacturer' },
+        'CROSS_SOURCE_MANUFACTURER_MISMATCH',
+      ],
+      [{ manufacturer: null }, 'CROSS_SOURCE_MANUFACTURER_UNAVAILABLE'],
+      [{ status: 'Inactive' }, 'NAFDAC_INACTIVE'],
+      [{ registrationExpiresAt: '2000-01-01' }, 'NAFDAC_REGISTRATION_EXPIRED'],
+      [{ dataQualityNote: 'Conflicting source fields' }, 'NAFDAC_DATA_QUALITY'],
+    ])(
+      'warns for conflicting or incomplete registration evidence: %j',
+      async (changes, code) => {
+        registrationLookup.mockResolvedValue({
+          status: 'FOUND',
+          records: [{ ...record, ...changes }],
+        });
+        const result = await service.verify({ gtin, nafdacNumber: 'A4-1234' });
+        expect(result.validation.status).toBe('WARNING');
+        expect(result.validation.reasons).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code })]),
+        );
+      },
+    );
+
+    it.each([
+      'NOT_PROVIDED',
+      'NOT_CONFIGURED',
+      'NO_EXACT_MATCH',
+      'AMBIGUOUS',
+      'UNAVAILABLE',
+    ])('warns when NAFDAC lookup is %s', async (status) => {
+      registrationLookup.mockResolvedValue({ status, records: [] });
+      const result = await service.verify({ gtin });
+      expect(result.validation.status).toBe('WARNING');
+      expect(result.validation.reasons[0].code).toBe(`NAFDAC_${status}`);
+    });
+
+    it.each(['NOT_FOUND', 'UNAVAILABLE', 'AMBIGUOUS'])(
+      'requires openFDA evidence even with an active registration: %s',
+      async (status) => {
+        lookup.mockResolvedValue({ status, url: null, label: null });
+        const result = await service.verify({ gtin, nafdacNumber: 'A4-1234' });
+        expect(result.validation.status).toBe('WARNING');
+        expect(result.validation.reasons[0].code).toBe(`OPENFDA_${status}`);
+      },
+    );
+
+    it('blocks expired packs and supplied packaging mismatches even when sources agree', async () => {
+      const result = await service.verify({
+        rawBarcode: `(01)${gtin}(17)200101`,
+        manufacturer: 'Other',
+      });
+      expect(result.validation.status).toBe('WARNING');
+      expect(result.validation.reasons.map((item) => item.code)).toEqual(
+        expect.arrayContaining([
+          'PACK_EXPIRED',
+          'OPENFDA_MANUFACTURER_MISMATCH',
+          'NAFDAC_MANUFACTURER_MISMATCH',
+        ]),
+      );
+    });
+
+    it('keeps a NAFDAC-only lookup as a warning', async () => {
+      const result = await service.verify({ nafdacNumber: 'A4-1234' });
+      expect(result.validation.status).toBe('WARNING');
+      expect(result.validation.reasons[0].code).toBe('BARCODE_NOT_PROVIDED');
+    });
+  });
 });
 
 describe('openFDA exact identifier lookup', () => {
