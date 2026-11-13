@@ -43,10 +43,17 @@ export class Gs1ImageDecoderService {
     let raw: string;
     try {
       const hints = new Map([[DecodeHintType.TRY_HARDER, true]]);
+      // ZXing expects one luminance byte per pixel, not interleaved RGBA bytes.
+      const luminance = new Uint8ClampedArray(width * height);
+      for (let pixel = 0; pixel < luminance.length; pixel++) {
+        const offset = pixel * 4;
+        const alpha = data[offset + 3] / 255;
+        const value =
+          (data[offset] + 2 * data[offset + 1] + data[offset + 2]) / 4;
+        luminance[pixel] = value * alpha + 255 * (1 - alpha);
+      }
       const bitmap = new BinaryBitmap(
-        new HybridBinarizer(
-          new RGBLuminanceSource(new Uint8ClampedArray(data), width, height),
-        ),
+        new HybridBinarizer(new RGBLuminanceSource(luminance, width, height)),
       );
       raw = new DataMatrixReader().decode(bitmap, hints).getText();
     } catch {

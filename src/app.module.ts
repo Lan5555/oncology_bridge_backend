@@ -21,6 +21,7 @@ import { CourierAssignmentModule } from './courier_assignment/courier_assignment
 import { InsuranceProviderModule } from './insurance_provider/insurance_provider.module';
 import { InsuranceRequestModule } from './insurance_request/insurance_request.module';
 import { ScanLogModule } from './scan_log/scan_log.module';
+import { PharmacyManifestModule } from './pharmacy_manifest/pharmacy-manifest.module';
 import { WebhookLogModule } from './webhook_log/webhook_log.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -99,6 +100,7 @@ import { RegistryMetadataModule } from './registry_metadata/registry-metadata.mo
     InsuranceProviderModule,
     InsuranceRequestModule,
     ScanLogModule,
+    PharmacyManifestModule,
     WebhookLogModule,
     GuardsModule,
     AuthModule,

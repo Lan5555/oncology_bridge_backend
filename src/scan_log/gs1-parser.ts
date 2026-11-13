@@ -20,15 +20,27 @@ export function parseGs1(raw: string): Gs1Identifiers {
     expiry: null,
     serial: null,
   };
-  const text = raw.trim().replace(/^\]d2/i, '');
+  const text = raw.trim().replace(/^\](?:d2|C1)/i, '');
+  const invalid = (): Gs1Identifiers => ({
+    gtin: null,
+    lot: null,
+    expiry: null,
+    serial: null,
+  });
+  const seen = new Set<string>();
 
   if (/\(01\)/.test(text)) {
     const matches = [...text.matchAll(/\((01|10|17|21)\)([^()]*)/g)];
+    if (matches.map((match) => match[0]).join('') !== text) return invalid();
     for (const match of matches) {
-      const value = match[2]?.trim();
-      if (match[1] === '01') identifiers.gtin = value?.slice(0, 14) ?? null;
+      if (seen.has(match[1])) return invalid();
+      seen.add(match[1]);
+      const value = match[2];
+      if (match[1] === '01' && !/^\d{14}$/.test(value)) return invalid();
+      if (match[1] === '17' && !/^\d{6}$/.test(value)) return invalid();
+      if (match[1] === '01') identifiers.gtin = value ?? null;
       if (match[1] === '10') identifiers.lot = value ?? null;
-      if (match[1] === '17') identifiers.expiry = value?.slice(0, 6) ?? null;
+      if (match[1] === '17') identifiers.expiry = value ?? null;
       if (match[1] === '21') identifiers.serial = value ?? null;
     }
     return identifiers;
@@ -41,6 +53,8 @@ export function parseGs1(raw: string): Gs1Identifiers {
       continue;
     }
     const ai = text.slice(i, i + 2);
+    if (seen.has(ai)) return invalid();
+    seen.add(ai);
     i += 2;
     if (ai === '01' || ai === '17') {
       const size = ai === '01' ? 14 : 6;
@@ -58,7 +72,7 @@ export function parseGs1(raw: string): Gs1Identifiers {
       i = end === -1 ? text.length : end + 1;
       continue;
     }
-    break;
+    return invalid();
   }
   return identifiers;
 }
@@ -101,12 +115,16 @@ export function validateIdentifiers(ids: Gs1Identifiers): Gs1Validation {
   const messages: string[] = [];
   if (!validateGtin(ids.gtin))
     messages.push('GTIN must be a valid GTIN-14 with a correct check digit.');
-  if (!ids.lot?.trim())
-    messages.push('Lot/batch identifier (AI 10) is missing.');
+  if (!ids.lot || !/^[!-~]{1,20}$/.test(ids.lot))
+    messages.push(
+      'Lot/batch identifier (AI 10) must contain 1 to 20 printable characters without spaces.',
+    );
   if (!normalizeGs1Expiry(ids.expiry))
     messages.push('Expiry (AI 17) is missing or is not a valid date.');
-  if (!ids.serial?.trim())
-    messages.push('Serial identifier (AI 21) is missing.');
+  if (!ids.serial || !/^[!-~]{1,20}$/.test(ids.serial))
+    messages.push(
+      'Serial identifier (AI 21) must contain 1 to 20 printable characters without spaces.',
+    );
   return {
     valid: messages.length === 0,
     status: messages.length ? 'INVALID' : 'VALID',
