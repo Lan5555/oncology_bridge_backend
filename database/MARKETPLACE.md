@@ -52,4 +52,4 @@ Frontend listing controls should check permissions.includes('marketplace.list') 
 
 ## Additional payment provider
 
-Flutterwave Standard v3 is supported alongside Paystack. Apply `marketplace-payment-providers.sql` before deploying provider selection. See [FLUTTERWAVE-CHECKOUT.md](FLUTTERWAVE-CHECKOUT.md) for server settings, webhook configuration, frontend contracts and acceptance steps.
+Flutterwave Standard v3 is the default for new marketplace checkouts. Paystack remains available by explicit selection. Apply `marketplace-payment-providers.sql` if the provider column has yet to be deployed. See [FLUTTERWAVE-CHECKOUT.md](FLUTTERWAVE-CHECKOUT.md) for server settings, webhook configuration, frontend contracts and acceptance steps.

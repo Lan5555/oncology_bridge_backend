@@ -410,15 +410,18 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       );
     const [used] = await manager.query<{ qty: number }[]>(
       `SELECT COALESCE(sum(quantity),0)::int qty FROM marketplace_orders WHERE prescription_id=$1
-      AND ($2::uuid IS NULL OR id<>$2) AND (reservation_state='CONSUMED' OR payment_status='PAID_REVIEW' OR
-      (reservation_state='RESERVED' AND expires_at>now()))`,
+      AND ($2::uuid IS NULL OR id<>$2)
+      AND (reservation_state='CONSUMED' OR payment_status='PAID_REVIEW')`,
       [id, excludeOrder ?? null],
     );
-    if (used.qty + quantity > rx.qty)
+    const remaining = Math.max(0, rx.qty - used.qty);
+    if (quantity > remaining)
       this.fail(
         422,
         'PRESCRIPTION_NOT_APPROVED',
-        'The requested quantity exceeds the prescription remaining quantity.',
+        remaining
+          ? `You can order up to ${remaining} ${remaining === 1 ? 'unit' : 'units'} on this prescription.`
+          : 'There are no units available on this prescription.',
       );
   }
 
@@ -434,25 +437,15 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         'IDEMPOTENCY_CONFLICT',
         'Provide a UUID Idempotency-Key header.',
       );
-    const provider = dto.paymentProvider ?? 'PAYSTACK';
-    if (!['PAYSTACK', 'FLUTTERWAVE'].includes(provider))
+    if (
+      dto.paymentProvider != null &&
+      !['PAYSTACK', 'FLUTTERWAVE'].includes(dto.paymentProvider)
+    )
       this.fail(
         422,
         'INVALID_PAYMENT_PROVIDER',
         'Select Paystack or Flutterwave.',
       );
-    this.gateway(provider).assertConfigured();
-    const hash = createHash('sha256')
-      .update(
-        JSON.stringify([
-          dto.listingId.toLowerCase(),
-          dto.quantity,
-          dto.prescriptionId?.toLowerCase() ?? null,
-          // Preserve hashes for existing Paystack orders.
-          ...(provider === 'FLUTTERWAVE' ? [provider] : []),
-        ]),
-      )
-      .digest('hex');
     const order = await this.db.transaction(async (manager) => {
       await this.lock(manager);
       const user = await this.actor(manager, actorId);
@@ -460,15 +453,37 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         'SELECT * FROM marketplace_orders WHERE buyer_id=$1 AND idempotency_key=$2',
         [actorId, key],
       );
-      if (existing) {
-        if (existing.payload_hash !== hash)
-          this.fail(
-            409,
-            'IDEMPOTENCY_CONFLICT',
-            'This checkout key was used for different details.',
-          );
-        return existing;
+      // An omitted provider on retry follows the original checkout selection.
+      const provider =
+        dto.paymentProvider ?? existing?.payment_provider ?? 'FLUTTERWAVE';
+      const hash = createHash('sha256')
+        .update(
+          JSON.stringify([
+            dto.listingId.toLowerCase(),
+            dto.quantity,
+            dto.prescriptionId?.toLowerCase() ?? null,
+            // Preserve hashes for existing Paystack orders.
+            ...(provider === 'FLUTTERWAVE' ? [provider] : []),
+          ]),
+        )
+        .digest('hex');
+      if (existing && existing.payload_hash !== hash)
+        this.fail(
+          409,
+          'IDEMPOTENCY_CONFLICT',
+          'This checkout key was used for different details.',
+        );
+      try {
+        this.gateway(provider).assertConfigured();
+      } catch (error) {
+        this.logCheckoutFailure(
+          provider,
+          'checking payment configuration',
+          error,
+        );
+        throw error;
       }
+      if (existing) return existing;
       const [row] = await manager.query<ListingRow[]>(
         `SELECT l.*,i.medicine_id,i.quantity stock_quantity,m.generic_name,m.brand_name,m.strength,
         m.prescription_required clinical_rx,i.batch_number,to_char(i.expiry_date,'YYYY-MM-DD') expires_on,h.name seller_name,h.city,
@@ -519,7 +534,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         60,
         Math.max(
           5,
-          Number(this.config.get('MARKETPLACE_RESERVATION_MINUTES')) || 15,
+          Number(this.config.get('MARKETPLACE_RESERVATION_MINUTES')) || 5,
         ),
       );
       const [created] = await manager.query<OrderRow[]>(
@@ -612,18 +627,21 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
           );
         if (order.authorization_url) return order;
         // Always reuse the persisted provider reference, including ambiguous initialization timeouts.
+        let step = 'reading the buyer email';
         try {
           const email = this.encryption.decrypt(user.email);
           if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
             throw new ServiceUnavailableException(
               'The buyer email is unavailable.',
             );
+          step = 'initializing the payment provider';
           const url = await this.gateway(order.payment_provider).initialize(
             email,
             Number(order.total_kobo),
             order.payment_reference,
             order.invoice_reference,
           );
+          step = 'saving the checkout link';
           // A SELECT over the update returns rows; raw UPDATE returns [rows, count] in TypeORM.
           const [saved] = await manager.query<OrderRow[]>(
             `WITH initialized AS (
@@ -634,6 +652,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
           );
           return saved;
         } catch (error) {
+          this.logCheckoutFailure(order.payment_provider, step, error);
           // Commit the uncertain state. Reconciliation must verify rather than release immediately.
           await manager.query(
             "UPDATE marketplace_orders SET initialization_attempted=true,payment_status='INITIALIZATION_UNKNOWN' WHERE id=$1",
@@ -646,6 +665,27 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         if (order.initializationError) throw order.initializationError;
         return order;
       });
+  }
+
+  private logCheckoutFailure(
+    provider: OrderRow['payment_provider'],
+    step: string,
+    error: unknown,
+  ) {
+    let reason = 'Unexpected error';
+    if (error instanceof HttpException) {
+      // These checkout steps throw application-defined messages.
+      reason = `HTTP ${error.getStatus()} ${error.message}`;
+    } else if (error instanceof QueryFailedError) {
+      const { code } = error.driverError as { code?: unknown };
+      reason =
+        typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code)
+          ? `Database error (SQLSTATE ${code})`
+          : 'Database error';
+    }
+    this.logger.warn(
+      `Marketplace checkout ${provider} failed while ${step}. ${reason}`,
+    );
   }
 
   async webhook(

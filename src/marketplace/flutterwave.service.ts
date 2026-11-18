@@ -1,16 +1,19 @@
 import {
   BadGatewayException,
   Injectable,
+  Logger,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
 import { paymentCallback } from './payment-callback';
 import type { VerifiedPayment } from './paystack.service';
 
 @Injectable()
 export class FlutterwaveService {
+  private readonly logger = new Logger(FlutterwaveService.name);
+
   constructor(private readonly config: ConfigService) {}
 
   private secret() {
@@ -32,10 +35,12 @@ export class FlutterwaveService {
     body?: object,
   ): Promise<Record<string, unknown>> {
     const key = this.secret();
+    const signal = AbortSignal.timeout(15000);
+    let failure = 'could not connect to Flutterwave';
     try {
       const response = await fetch(`https://api.flutterwave.com/v3${path}`, {
         method: body ? 'POST' : 'GET',
-        signal: AbortSignal.timeout(15000),
+        signal,
         redirect: 'error',
         headers: {
           Authorization: `Bearer ${key}`,
@@ -43,12 +48,19 @@ export class FlutterwaveService {
         },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
+      failure = `Flutterwave returned HTTP ${response.status}`;
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error();
+      }
+
+      failure = 'Flutterwave returned invalid JSON';
       const result = (await response.json()) as {
         status?: unknown;
         data?: unknown;
       } | null;
+      failure = 'Flutterwave did not confirm the transaction in its response';
       if (
-        !response.ok ||
         result?.status !== 'success' ||
         !result.data ||
         typeof result.data !== 'object' ||
@@ -57,6 +69,10 @@ export class FlutterwaveService {
         throw new Error();
       return result.data as Record<string, unknown>;
     } catch {
+      if (body) {
+        const reason = signal.aborted ? 'the request timed out' : failure;
+        this.logger.warn(`Flutterwave checkout request failed. ${reason}.`);
+      }
       throw new BadGatewayException({
         message:
           'Payment provider could not confirm the transaction. Please retry.',
@@ -70,38 +86,37 @@ export class FlutterwaveService {
     reference: string,
     invoice: string,
   ) {
-    // Internal amounts are integer kobo; Flutterwave accepts major currency units.
-    const naira = (amount / 100).toFixed(2);
-    const secretHash = createHash('sha256').update(this.secret()).digest('hex');
-    const payloadHash = createHash('sha256')
-      .update(naira + 'NGN' + email + reference + secretHash)
-      .digest('hex');
+    // The backend sets the hosted checkout amount and verifies payment before fulfillment.
     const data = await this.request('/payments', {
       tx_ref: reference,
-      amount: naira,
+      amount: amount / 100,
       currency: 'NGN',
       redirect_url: paymentCallback(this.config, invoice),
       customer: { email },
-      payload_hash: payloadHash,
     });
-    try {
-      if (typeof data.link !== 'string') throw new Error();
-      const url = new URL(data.link);
-      if (
-        url.protocol !== 'https:' ||
-        url.hostname !== 'checkout.flutterwave.com' ||
-        url.port ||
-        url.username ||
-        url.password
-      )
-        throw new Error();
+    const link = data.link;
+    const hasLink = typeof link === 'string' && link.trim() !== '';
+    const url = hasLink && URL.canParse(link) ? new URL(link) : null;
+    let reason: string;
+    if (!hasLink) reason = 'data.link is missing, blank, or not a string';
+    else if (!url) reason = 'data.link is not an absolute URL';
+    else if (url.protocol !== 'https:') reason = 'the URL does not use HTTPS';
+    else if (url.username || url.password)
+      reason = 'the URL embeds credentials';
+    else if (url.port) reason = 'the URL uses a nonstandard HTTPS port';
+    else if (
+      url.hostname === 'checkout.flutterwave.com' ||
+      (url.hostname === 'checkout-v2.dev-flutterwave.com' &&
+        this.secret().startsWith('FLWSECK_TEST-'))
+    )
       return url.toString();
-    } catch {
-      throw new BadGatewayException({
-        message: 'Flutterwave returned an invalid checkout URL.',
-        code: 'PAYMENT_INITIALIZATION_FAILED',
-      });
-    }
+    else reason = `unexpected hostname (${url.hostname.slice(0, 253)})`;
+
+    this.logger.warn(`Flutterwave checkout link rejected. Reason: ${reason}.`);
+    throw new BadGatewayException({
+      message: 'Flutterwave returned an invalid checkout URL.',
+      code: 'PAYMENT_INITIALIZATION_FAILED',
+    });
   }
   async verify(reference: string): Promise<VerifiedPayment> {
     const data = await this.request(

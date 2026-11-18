@@ -254,7 +254,7 @@ describe('marketplace PostgreSQL behavior', () => {
       images as unknown as CloudinaryImagesService,
       paystack as unknown as PaystackService,
       { decrypt: () => 'buyer@example.test' } as unknown as EncryptionService,
-      new ConfigService({ MARKETPLACE_RESERVATION_MINUTES: '15' }),
+      new ConfigService({ MARKETPLACE_RESERVATION_MINUTES: '' }),
       tracking,
       flutterwave as unknown as FlutterwaveService,
     );
@@ -366,7 +366,12 @@ describe('marketplace PostgreSQL behavior', () => {
   ) {
     try {
       return Promise.resolve(
-        service.checkout(buyer, key, { listingId, quantity, ...extra }),
+        service.checkout(buyer, key, {
+          listingId,
+          quantity,
+          paymentProvider: 'PAYSTACK',
+          ...extra,
+        }),
       );
     } catch (error) {
       return Promise.reject(
@@ -1462,7 +1467,11 @@ describe('marketplace PostgreSQL behavior', () => {
     ]);
     expect(a).toEqual(b);
     expect(paystack.initialize).toHaveBeenCalledTimes(1);
-    expect(await query('SELECT id FROM marketplace_orders')).toHaveLength(1);
+    expect(
+      await query(
+        "SELECT (expires_at - created_at = interval '5 minutes') AS five_minute_hold FROM marketplace_orders",
+      ),
+    ).toEqual([{ five_minute_hold: true }]);
     await expect(checkout(id, 8, key)).rejects.toMatchObject({ status: 409 });
     await expect(checkout(id, 4)).rejects.toMatchObject({ status: 409 });
     expect(
@@ -1508,10 +1517,34 @@ describe('marketplace PostgreSQL behavior', () => {
         prescription,
         approval,
       ]);
-      await checkout(id, 2, randomUUID(), { prescriptionId: prescription });
+      const earlier = await checkout(id, 2, randomUUID(), {
+        prescriptionId: prescription,
+      });
+      const later = await checkout(id, 2, randomUUID(), {
+        prescriptionId: prescription,
+      });
+      await expect(
+        checkout(id, 4, randomUUID(), { prescriptionId: prescription }),
+      ).rejects.toMatchObject({ status: 422 });
+      await expect(service.reconcile(earlier.data!.reference)).resolves.toEqual(
+        {
+          status: 'PAID',
+        },
+      );
       await expect(
         checkout(id, 2, randomUUID(), { prescriptionId: prescription }),
-      ).rejects.toMatchObject({ status: 422 });
+      ).rejects.toMatchObject({
+        status: 422,
+        response: {
+          message: 'You can order up to 1 unit on this prescription.',
+        },
+      });
+      await expect(service.reconcile(later.data!.reference)).resolves.toEqual({
+        status: 'PAID_REVIEW',
+      });
+      expect((await query('SELECT quantity FROM inventory'))[0].quantity).toBe(
+        8,
+      );
     },
   );
   it('keeps one reservation and reference after an initialization timeout', async () => {
@@ -1649,15 +1682,17 @@ describe('marketplace PostgreSQL behavior', () => {
     });
   });
 
-  it('routes Flutterwave checkout, invoice and duplicate webhooks through verified payment', async () => {
+  it('defaults to Flutterwave and routes invoices and duplicate webhooks through verified payment', async () => {
     flutterwave.initialize.mockResolvedValue(
       'https://checkout.flutterwave.com/v3/hosted/pay/test',
     );
     const id = await listing();
     const key = randomUUID();
-    const data = (
-      await checkout(id, 2, key, { paymentProvider: 'FLUTTERWAVE' })
-    ).data!;
+    const result = await service.checkout(buyer, key, {
+      listingId: id,
+      quantity: 2,
+    });
+    const data = result.data!;
     expect(data.paymentProvider).toBe('FLUTTERWAVE');
     expect(paystack.initialize).not.toHaveBeenCalled();
     expect(flutterwave.initialize).toHaveBeenCalledWith(
@@ -1667,6 +1702,10 @@ describe('marketplace PostgreSQL behavior', () => {
       data.invoiceReference,
     );
     await expect(checkout(id, 2, key)).rejects.toMatchObject({ status: 409 });
+    await expect(
+      checkout(id, 2, key, { paymentProvider: 'FLUTTERWAVE' }),
+    ).resolves.toEqual(result);
+    expect(flutterwave.initialize).toHaveBeenCalledTimes(1);
     flutterwave.verify.mockResolvedValue({
       status: 'success',
       amount: 250050,
@@ -1697,6 +1736,19 @@ describe('marketplace PostgreSQL behavior', () => {
       paystackUrl: null,
       authorizationUrl: null,
     });
+  });
+
+  it('replays a Paystack checkout with an omitted provider using the original gateway', async () => {
+    const id = await listing();
+    const key = randomUUID();
+    const original = await checkout(id, 2, key);
+    expect(original.data?.paymentProvider).toBe('PAYSTACK');
+
+    await expect(
+      service.checkout(buyer, key, { listingId: id, quantity: 2 }),
+    ).resolves.toEqual(original);
+    expect(paystack.initialize).toHaveBeenCalledTimes(1);
+    expect(flutterwave.assertConfigured).not.toHaveBeenCalled();
   });
 
   it('rejects Flutterwave amount mismatches and retains stock', async () => {

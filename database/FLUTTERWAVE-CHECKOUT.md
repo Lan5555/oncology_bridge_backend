@@ -1,6 +1,6 @@
-# Flutterwave alongside Paystack
+# Flutterwave marketplace checkout
 
-Scope: authenticated marketplace checkout. Existing clients default to PAYSTACK. Legacy prescription invoices are unchanged. Hosted checkout uses Flutterwave Standard v3; no frontend payment SDK or public key is required. This does not add seller payout/split settlement.
+Flutterwave is the default for new authenticated marketplace checkouts. Buyers can still select Paystack. Hosted checkout uses Flutterwave Standard v3 and runs on the provider's site.
 
 ## Deployment
 
@@ -8,11 +8,13 @@ Apply database/marketplace-payment-providers.sql after marketplace.sql (and reta
 
 Configure backend-only FLUTTERWAVE_SECRET_KEY and FLUTTERWAVE_SECRET_HASH through your deployment secret manager. Use the same secret hash in the Flutterwave v3 dashboard webhook settings. FRONTEND_ORIGIN must be HTTPS and included in CORS_ORIGIN. No secrets were read or changed during implementation.
 
+For local development, the backend accepts an HTTP loopback origin such as `http://localhost:3001` when it is set as `FRONTEND_ORIGIN` and included in `CORS_ORIGIN`. This exception applies when `NODE_ENV` is `development` or unset. Use Flutterwave test credentials for local checkout.
+
 Webhook: POST <backend>/api/payments/flutterwave/webhook. This v3 endpoint authenticates the verif-hash header, handles charge.completed, then verifies the stored tx_ref directly with Flutterwave. Do not configure the v4 HMAC webhook format for this endpoint. Keep the existing Paystack webhook and credentials. Configure and test test/live environments separately.
 
 ## Frontend implementation text
 
-Add a payment-provider selector with labels Paystack and Flutterwave and values PAYSTACK and FLUTTERWAVE. Keep Paystack selected by default. On checkout submit:
+Select Flutterwave by default in the payment-provider selector. Submit `FLUTTERWAVE` or `PAYSTACK` to honor the buyer's selection.
 
 POST /api/marketplace/checkout
 Authorization: Bearer <buyer token>
@@ -26,7 +28,7 @@ Content-Type: application/json
   "paymentProvider": "FLUTTERWAVE"
 }
 
-Do not send amounts, currency, email, callback URL or provider transaction IDs. The backend derives these. Provider values are case-sensitive. Omitting paymentProvider retains Paystack behavior.
+The backend derives the amount, currency, email, callback URL, and provider reference. Provider values are case-sensitive. Omitting `paymentProvider` selects Flutterwave for a new checkout key and uses the saved provider for an existing key.
 
 HTTP 200 response envelope:
 
